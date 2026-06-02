@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secretd Management</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+        const API_BASE = ''; 
+
+        const fetchConfig = { credentials: 'same-origin' };
+
+        function App() {
+            const [identity, setIdentity] = useState(null);
+            const [error, setError] = useState('');
+            const [isChecking, setIsChecking] = useState(true);
+
+            const checkAuth = async () => {
+                try {
+                    const res = await fetch(`${API_BASE}/v1/auth/me`, fetchConfig);
+                    if (res.ok) setIdentity(await res.json());
+                    else setIdentity(null);
+                } catch (err) {
+                    setIdentity(null);
+                } finally {
+                    setIsChecking(false);
+                }
+            };
+
+            const login = async (username, password) => {
+                try {
+                    const res = await fetch(`${API_BASE}/v1/auth/login`, {
+                        ...fetchConfig,
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username, password })
+                    });
+                    if (!res.ok) throw new Error('Invalid credentials');
+                    await checkAuth();
+                } catch (err) {
+                    setError('Login failed. Invalid username or password.');
+                }
+            };
+
+            const logout = async () => {
+                await fetch(`${API_BASE}/v1/auth/logout`, { ...fetchConfig, method: 'POST' });
+                setIdentity(null);
+            };
+
+            useEffect(() => { checkAuth(); }, []);
+
+            if (isChecking) return <div className="min-h-screen flex items-center justify-center text-gray-400">Evaluating session constraints...</div>;
+            if (!identity) return <Login onLogin={login} error={error} />;
+
+            return (
+                <div className="max-w-6xl mx-auto p-6">
+                    <header className="flex justify-between items-center mb-8 border-b border-gray-800 pb-4">
+                        <div>
+                            <h1 className="text-2xl font-bold flex items-center gap-3">Secretd</h1>
+                            <p className="text-sm text-gray-400">Authenticated as: <span className="text-blue-400">{identity.name}</span> {identity.is_admin && '(Admin)'}</p>
+                        </div>
+                        <button onClick={logout} className="bg-red-900/50 hover:bg-red-800 text-red-200 px-4 py-2 rounded transition">
+                            Logout
+                        </button>
+                    </header>
+                    <Dashboard identity={identity} />
+                </div>
+            );
+        }
+
+        function Login({ onLogin, error }) {
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            return (
+                <div className="flex items-center justify-center min-h-screen">
+                    <form onSubmit={(e) => { e.preventDefault(); onLogin(username, password); }} className="bg-gray-800 p-8 rounded-lg shadow-xl w-96 border border-gray-700">
+                        <h2 className="text-xl font-bold mb-6">Admin Login</h2>
+                        {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
+                        <div className="mb-4">
+                            <label className="block text-xs text-gray-400 mb-1">Username</label>
+                            <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. admin" className="w-full bg-gray-900 border border-gray-700 rounded p-3 text-gray-100 focus:outline-none focus:border-blue-500" required />
+                        </div>
+                        <div className="mb-6">
+                            <label className="block text-xs text-gray-400 mb-1">Password</label>
+                            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••••••" className="w-full bg-gray-900 border border-gray-700 rounded p-3 text-gray-100 focus:outline-none focus:border-blue-500" required />
+                        </div>
+                        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 font-semibold p-3 rounded transition">Sign In</button>
+                    </form>
+                </div>
+            );
+        }
+
+        function Dashboard({ identity }) {
+            const [view, setView] = useState('secrets');
+            const [tokens, setTokens] = useState([]);
+
+            const fetchTokens = useCallback(async () => {
+                if (!identity.is_admin) return;
+                const res = await fetch(`${API_BASE}/v1/tokens`, fetchConfig);
+                if (res.ok) setTokens(await res.json() || []);
+            }, [identity]);
+
+            useEffect(() => { fetchTokens(); }, [fetchTokens]);
+
+            return (
+                <div>
+                    <nav className="flex space-x-4 mb-6">
+                        <button onClick={() => setView('secrets')} className={`px-4 py-2 rounded ${view === 'secrets' ? 'bg-gray-800 border-b-2 border-blue-500' : 'text-gray-400 hover:text-gray-200'}`}>Secrets</button>
+                        {identity.is_admin && (
+                            <>
+                                <button onClick={() => setView('tokens')} className={`px-4 py-2 rounded ${view === 'tokens' ? 'bg-gray-800 border-b-2 border-blue-500' : 'text-gray-400 hover:text-gray-200'}`}>Token Management</button>
+                                <button onClick={() => setView('setup')} className={`px-4 py-2 rounded ${view === 'setup' ? 'bg-gray-800 border-b-2 border-blue-500' : 'text-gray-400 hover:text-gray-200'}`}>Setup & Recovery</button>
+                            </>
+                        )}
+                    </nav>
+                    {view === 'secrets' && <SecretsManager identity={identity} tokens={tokens} />}
+                    {view === 'tokens' && <TokenManager tokens={tokens} refreshTokens={fetchTokens} />}
+                    {view === 'setup' && <SetupManager />}
+                </div>
+            );
+        }
+
+        function SetupManager() {
+            const [recoveryKeys, setRecoveryKeys] = useState([]);
+            const [isRegenerating, setIsRegenerating] = useState(false);
+
+            const handleRegenerateRecoveryKeys = async () => {
+                if (!confirm("Are you sure? This will immediately invalidate all old emergency recovery keys.")) return;
+                setIsRegenerating(true);
+                try {
+                    const res = await fetch(`${API_BASE}/v1/recovery-keys/regenerate`, {
+                        ...fetchConfig,
+                        method: 'POST'
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setRecoveryKeys(data.recovery_keys);
+                    } else {
+                        alert("Failed to regenerate recovery keys.");
+                    }
+                } catch (e) {
+                    alert("Network error.");
+                } finally {
+                    setIsRegenerating(false);
+                }
+            };
+
+            return (
+                <div className="max-w-2xl">
+                    <div className="bg-gray-800 p-8 rounded-lg border border-red-950">
+                        <h3 className="text-xl font-bold text-red-400 mb-4">Emergency Recovery Management</h3>
+                        <p className="text-gray-300 mb-6 leading-relaxed">
+                            Emergency recovery keys are used to unlock the database if the master encryption key is lost. 
+                            <span className="text-red-400 font-bold block mt-2">Warning: Regenerating recovery keys immediately invalidates the previous set.</span>
+                        </p>
+                        
+                        <button 
+                            onClick={handleRegenerateRecoveryKeys} 
+                            disabled={isRegenerating}
+                            className="bg-red-900 hover:bg-red-800 text-white font-bold px-6 py-3 rounded transition disabled:opacity-50"
+                        >
+                            {isRegenerating ? "Regenerating..." : "Regenerate Recovery Keys"}
+                        </button>
+
+                        {recoveryKeys.length > 0 && (
+                            <div className="mt-8 bg-red-950/40 border border-red-900 rounded-lg p-6">
+                                <h4 className="text-lg font-semibold text-red-300 mb-2">New Recovery Keys:</h4>
+                                <p className="text-sm text-gray-400 mb-4 italic">
+                                    Copy these keys immediately and store them in a secure, offline location. They will NOT be shown again.
+                                </p>
+                                <ul className="space-y-3">
+                                    {recoveryKeys.map((k, idx) => (
+                                        <li key={idx} className="bg-black p-3 rounded font-mono text-sm break-all select-all border border-red-900/30 shadow-inner">
+                                            <span className="text-red-500 font-bold mr-3">Key {idx+1}:</span>{k}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function SecretsManager({ identity, tokens }) {
+            const [secrets, setSecrets] = useState([]);
+            const [readSecret, setReadSecret] = useState(null);
+            const [filterTokenName, setFilterTokenName] = useState('');
+            const [isAdding, setIsAdding] = useState(false);
+            const [isEditing, setIsEditing] = useState(false);
+            const [newKey, setNewKey] = useState('');
+            const [newValue, setNewValue] = useState('');
+
+            const getHeaders = useCallback(() => {
+                const headers = { 'Content-Type': 'application/json' };
+                if (filterTokenName) headers['X-Impersonate-Token'] = filterTokenName;
+                return headers;
+            }, [filterTokenName]);
+
+            const fetchSecrets = useCallback(async () => {
+                const res = await fetch(`${API_BASE}/v1/secrets`, fetchConfig);
+                if (res.ok) setSecrets(await res.json() || []);
+            }, []);
+
+            useEffect(() => { fetchSecrets(); }, [fetchSecrets]);
+
+            const selectedToken = useMemo(() => tokens.find(t => t.name === filterTokenName), [filterTokenName, tokens]);
+
+            const getPerms = useCallback((key) => {
+                if (!selectedToken) return { GET: true, LIST: true, PUT: true, DELETE: true };
+                const res = { GET: false, LIST: false, PUT: false, DELETE: false };
+                selectedToken.policies.forEach(p => {
+                    let matched = false;
+                    if (p.prefix === '*') {
+                        matched = true;
+                    } else if (p.prefix.endsWith('*')) {
+                        const base = p.prefix.slice(0, -1);
+                        matched = key && key.startsWith(base);
+                    } else {
+                        matched = key === p.prefix || (key && key.startsWith(p.prefix + '.'));
+                    }
+
+                    if (matched) {
+                        p.methods.forEach(m => {
+                            if (m === '*') { res.GET = res.LIST = res.PUT = res.DELETE = true; }
+                            else if (res.hasOwnProperty(m)) { res[m] = true; }
+                        });
+                    }
+                });
+                return res;
+            }, [selectedToken]);
+
+            const groupedSecrets = useMemo(() => {
+                if (!selectedToken) return [{ name: 'All Vault Secrets', methods: ['*'], items: secrets }];
+
+                const groups = selectedToken.policies.map(p => ({
+                    name: `Prefix: ${p.prefix}`,
+                    methods: p.methods,
+                    items: []
+                }));
+
+                const unmatched = { name: 'Unmatched / Denied (Audit View)', methods: [], items: [] };
+
+                secrets.forEach(key => {
+                    const matches = selectedToken.policies.filter(p => p.prefix === '*' || key.startsWith(p.prefix));
+                    if (matches.length > 0) {
+                        let bestMatch = matches[0];
+                        matches.forEach(m => {
+                            if (m.prefix.length > bestMatch.prefix.length) bestMatch = m;
+                        });
+                        const groupIdx = selectedToken.policies.indexOf(bestMatch);
+                        groups[groupIdx].items.push(key);
+                    } else {
+                        unmatched.items.push(key);
+                    }
+                });
+
+                return [...groups.filter(g => g.items.length > 0), unmatched].filter(g => g.items.length > 0);
+            }, [secrets, selectedToken]);
+
+            const handleGet = async (key) => {
+                const res = await fetch(`${API_BASE}/v1/secrets/${key}`, { ...fetchConfig, headers: getHeaders() });
+                if (res.ok) setReadSecret(await res.json());
+                else if (res.status === 403) alert('Permission Denied by Backend');
+            };
+
+            const handlePut = async (e) => {
+                e.preventDefault();
+                const res = await fetch(`${API_BASE}/v1/secrets/${newKey}`, {
+                    ...fetchConfig,
+                    method: 'PUT',
+                    headers: getHeaders(),
+                    body: JSON.stringify({ value: newValue })
+                });
+                if (res.ok) {
+                    setIsAdding(false);
+                    setIsEditing(false);
+                    setNewKey('');
+                    setNewValue('');
+                    fetchSecrets();
+                } else if (res.status === 403) {
+                    alert('Permission Denied by Backend');
+                } else {
+                    alert('Failed to save secret');
+                }
+            };
+
+            const handleDelete = async (key) => {
+                if (!confirm(`Permanently delete ${key}?`)) return;
+                const res = await fetch(`${API_BASE}/v1/secrets/${key}`, { ...fetchConfig, method: 'DELETE', headers: getHeaders() });
+                if (res.ok) fetchSecrets();
+                else if (res.status === 403) alert('Permission Denied by Backend');
+            };
+
+            const handleEdit = (key) => {
+                setNewKey(key);
+                setNewValue('Loading...'); // UI hint
+                setIsEditing(true);
+                setIsAdding(false);
+                fetch(`${API_BASE}/v1/secrets/${key}`, { ...fetchConfig, headers: getHeaders() })
+                    .then(res => {
+                        if (res.ok) return res.json();
+                        throw new Error('Forbidden');
+                    })
+                    .then(data => setNewValue(data.value))
+                    .catch(() => {
+                        alert('Permission Denied by Backend');
+                        setIsEditing(false);
+                    });
+            };
+
+            const startAdd = () => {
+                setNewKey('');
+                setNewValue('');
+                setIsAdding(true);
+                setIsEditing(false);
+            };
+
+            const canPutAnything = useMemo(() => {
+                if (!selectedToken) return true;
+                return selectedToken.policies.some(p => p.methods.includes('PUT') || p.methods.includes('*'));
+            }, [selectedToken]);
+
+            return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="bg-gray-800 rounded-lg border border-gray-700 flex flex-col overflow-hidden">
+                        <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-850">
+                            <h3 className="text-lg font-semibold">Vault Paths</h3>
+                            <div className="flex gap-2">
+                                {identity.is_admin && !isAdding && !isEditing && (
+                                    <button 
+                                        onClick={startAdd} 
+                                        disabled={selectedToken && !canPutAnything}
+                                        className="bg-green-700 hover:bg-green-600 disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed text-xs px-2 py-1 rounded transition"
+                                    >
+                                        Add Secret
+                                    </button>
+                                )}
+                                {identity.is_admin && (
+                                    <select 
+                                        className="bg-gray-900 border border-gray-600 rounded p-1 text-sm text-gray-200 focus:outline-none"
+                                        value={filterTokenName}
+                                        onChange={(e) => setFilterTokenName(e.target.value)}
+                                    >
+                                        <option value="">View As: Master (Unfiltered)</option>
+                                        {tokens.map(t => <option key={t.name} value={t.name}>View As: {t.name}</option>)}
+                                    </select>
+                                )}
+                            </div>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto max-h-[600px]">
+                            {groupedSecrets.length === 0 ? <p className="p-4 text-gray-400 text-sm">No secrets found.</p> : null}
+                            
+                            {groupedSecrets.map(group => (
+                                <div key={group.name} className="border-b border-gray-700 last:border-0">
+                                    <div className="bg-gray-900/50 p-2 px-4 border-b border-gray-700/50 flex justify-between items-center">
+                                        <span className="text-[10px] font-bold text-gray-500 font-mono uppercase tracking-wider">{group.name}</span>
+                                        <div className="flex gap-1">
+                                            {group.methods.map(m => (
+                                                <span key={m} className="text-[9px] bg-blue-900/30 text-blue-300 px-1.5 py-0.5 rounded border border-blue-800/40 font-mono">{m}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <ul className="divide-y divide-gray-700/30">
+                                        {group.items.map(key => {
+                                            const p = getPerms(key);
+                                            return (
+                                                <li key={key} className="p-3 px-4 hover:bg-gray-750 flex justify-between items-center group">
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="font-mono text-sm text-gray-200">{key}</span>
+                                                        <span className={`text-[9px] font-bold px-1 rounded border ${p.LIST ? 'text-green-500 border-green-900/50 bg-green-950/20' : 'text-gray-600 border-gray-700 bg-gray-800/50'}`}>L</span>
+                                                    </div>
+                                                    <div className="flex gap-4 opacity-0 group-hover:opacity-100 transition">
+                                                        <button 
+                                                            onClick={() => handleGet(key)} 
+                                                            disabled={!p.GET}
+                                                            className={`text-sm font-semibold transition ${p.GET ? 'text-blue-400 hover:text-blue-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                                        >
+                                                            Read
+                                                        </button>
+                                                        {identity.is_admin && (
+                                                            <>
+                                                                <button 
+                                                                    onClick={() => handleEdit(key)} 
+                                                                    disabled={!p.PUT}
+                                                                    className={`text-sm font-semibold transition ${p.PUT ? 'text-yellow-400 hover:text-yellow-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                                                >
+                                                                    Edit
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => handleDelete(key)} 
+                                                                    disabled={!p.DELETE}
+                                                                    className={`text-sm font-semibold transition ${p.DELETE ? 'text-red-400 hover:text-red-300' : 'text-gray-600 cursor-not-allowed'}`}
+                                                                >
+                                                                    Delete
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {(readSecret || isAdding || isEditing) && (
+                        <div className="bg-gray-800 p-6 rounded-lg border border-blue-900 h-fit">
+                            {(isAdding || isEditing) ? (
+                                <form onSubmit={handlePut}>
+                                    <div className="flex justify-between items-start mb-4">
+                                        <h3 className="text-lg font-semibold">{isEditing ? 'Edit Secret' : 'Add New Secret'}</h3>
+                                        <button type="button" onClick={() => { setIsAdding(false); setIsEditing(false); }} className="text-gray-500 hover:text-gray-300 text-xl">&times;</button>
+                                    </div>
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="block text-xs text-gray-400 mb-1">Key Path (dots are allowed)</label>
+                                            <input type="text" required value={newKey} onChange={e => setNewKey(e.target.value)} disabled={isEditing} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white font-mono text-sm disabled:opacity-50" placeholder="e.g. app.database.password" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs text-gray-400 mb-1">Value</label>
+                                            <textarea required value={newValue} onChange={e => setNewValue(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white font-mono h-48 text-sm" />
+                                        </div>
+                                        <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 font-semibold p-2 rounded transition">Save Secret</button>
+                                    </div>
+                                </form>
+                            ) : (
+                                <>
+                                    <div className="flex justify-between items-start mb-4">
+                                        <h3 className="text-lg font-semibold">Decrypted Payload</h3>
+                                        <button onClick={() => setReadSecret(null)} className="text-gray-500 hover:text-gray-300 text-xl">&times;</button>
+                                    </div>
+                                    <div className="mb-2 text-sm text-gray-400 font-mono">{readSecret.key}</div>
+                                    <pre className="bg-gray-900 p-4 rounded border border-gray-700 whitespace-pre-wrap font-mono text-green-400 text-sm">{readSecret.value}</pre>
+                                </>
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // TokenManager handles the lifecycle of machine identities, including
+        // provisioning new tokens, editing policies, and cloning existing ones.
+        function TokenManager({ tokens, refreshTokens }) {
+            const [name, setName] = useState('');
+            const [policies, setPolicies] = useState([{ prefix: '', methods: ['GET', 'LIST'] }]);
+            const [generatedToken, setGeneratedToken] = useState('');
+            const [editingTokenName, setEditingTokenName] = useState(null);
+
+            const handleCreate = async (e) => {
+                e.preventDefault();
+                const activePolicies = policies.filter(p => p.prefix.trim() !== '');
+                if (activePolicies.length === 0) return alert('At least one policy prefix is required');
+
+                if (editingTokenName) {
+                    const res = await fetch(`${API_BASE}/v1/tokens/${editingTokenName}`, {
+                        ...fetchConfig,
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ policies: activePolicies })
+                    });
+                    if (res.ok) {
+                        setEditingTokenName(null);
+                        setName('');
+                        setPolicies([{ prefix: '', methods: ['GET', 'LIST'] }]);
+                        refreshTokens();
+                    } else {
+                        alert('Failed to update token');
+                    }
+                    return;
+                }
+                
+                const res = await fetch(`${API_BASE}/v1/tokens`, {
+                    ...fetchConfig,
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, policies: activePolicies })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setGeneratedToken(data.token);
+                    setName('');
+                    setPolicies([{ prefix: '', methods: ['GET', 'LIST'] }]);
+                    refreshTokens();
+                } else {
+                    const errorText = await res.text();
+                    alert(`Failed to create token: ${errorText}`);
+                }
+            };
+
+            const addPolicy = () => setPolicies([...policies, { prefix: '', methods: ['GET', 'LIST'] }]);
+            const removePolicy = (idx) => setPolicies(policies.filter((_, i) => i !== idx));
+            const updatePolicy = (idx, field, value) => {
+                const next = [...policies];
+                next[idx][field] = value;
+                setPolicies(next);
+            };
+
+            const toggleMethod = (idx, method) => {
+                const current = policies[idx].methods;
+                const next = current.includes(method) 
+                    ? current.filter(m => m !== method) 
+                    : [...current, method];
+                updatePolicy(idx, 'methods', next);
+            };
+
+            const handleDelete = async (tName) => {
+                if (!confirm(`Revoke token ${tName}?`)) return;
+                await fetch(`${API_BASE}/v1/tokens/${tName}`, { ...fetchConfig, method: 'DELETE' });
+                refreshTokens();
+            };
+
+            const handleEdit = (t) => {
+                setEditingTokenName(t.name);
+                setName(t.name);
+                setPolicies(t.policies.map(p => ({ ...p })));
+                setGeneratedToken('');
+            };
+
+            const handleClone = (t) => {
+                setEditingTokenName(null);
+                setName(`${t.name}-copy`);
+                setPolicies(t.policies.map(p => ({ ...p })));
+                setGeneratedToken('');
+            };
+
+            const cancelEdit = () => {
+                setEditingTokenName(null);
+                setName('');
+                setPolicies([{ prefix: '', methods: ['GET', 'LIST'] }]);
+            };
+
+            const handleRegenerateRecoveryKeys = async () => {
+                if (!confirm("Are you sure? This will immediately invalidate all old emergency recovery keys.")) return;
+                setIsRegenerating(true);
+                try {
+                    const res = await fetch(`${API_BASE}/v1/recovery-keys/regenerate`, {
+                        ...fetchConfig,
+                        method: 'POST'
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        setRecoveryKeys(data.recovery_keys);
+                    } else {
+                        alert("Failed to regenerate recovery keys.");
+                    }
+                } catch (e) {
+                    alert("Network error.");
+                } finally {
+                    setIsRegenerating(false);
+                }
+            };
+
+            return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                        <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+                            <h3 className="text-lg font-semibold p-4 border-b border-gray-700">Active Machine Tokens</h3>
+                            <ul className="divide-y divide-gray-700 max-h-[400px] overflow-y-auto">
+                                {tokens.map(t => (
+                                    <li key={t.name} className="p-4 flex flex-col gap-2">
+                                        <div className="flex justify-between items-start">
+                                            <div className="font-semibold text-blue-400">{t.name}</div>
+                                            <div className="flex gap-3">
+                                                <button onClick={() => handleEdit(t)} className="text-yellow-400 hover:text-yellow-300 text-sm">Edit</button>
+                                                <button onClick={() => handleClone(t)} className="text-green-400 hover:text-green-300 text-sm">Clone</button>
+                                                <button onClick={() => handleDelete(t.name)} className="text-red-400 hover:text-red-300 text-sm">Revoke</button>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            {t.policies.map((p, i) => (
+                                                <div key={i} className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[10px] font-mono">
+                                                    <span className="text-gray-400">{p.prefix}</span>
+                                                    <span className="ml-2 text-green-500">[{p.methods.join(',')}]</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+
+                        <div className="bg-gray-800 p-6 rounded-lg border border-red-950">
+                            <h3 className="text-lg font-semibold text-red-400 mb-2">Emergency Recovery Management</h3>
+                            <p className="text-sm text-gray-400 mb-4">
+                                Regenerating recovery keys invalidates the previous set. Use these keys to recover database access if your master key configuration is lost.
+                            </p>
+                            <button 
+                                onClick={handleRegenerateRecoveryKeys} 
+                                disabled={isRegenerating}
+                                className="bg-red-900 hover:bg-red-800 text-white font-semibold px-4 py-2 rounded text-sm transition disabled:opacity-50"
+                            >
+                                {isRegenerating ? "Regenerating..." : "Regenerate Recovery Keys"}
+                            </button>
+
+                            {recoveryKeys.length > 0 && (
+                                <div className="mt-4 bg-red-950/40 border border-red-900 rounded p-4">
+                                    <h4 className="text-sm font-semibold text-red-300 mb-2">New Recovery Keys (Printed Once):</h4>
+                                    <p className="text-xs text-gray-400 mb-3">Copy these keys immediately. They are not stored in plaintext on disk or in the database.</p>
+                                    <ul className="space-y-2">
+                                        {recoveryKeys.map((k, idx) => (
+                                            <li key={idx} className="bg-black p-2 rounded font-mono text-xs break-all select-all border border-red-900/30">
+                                                <span className="text-red-500 mr-2">Key {idx}:</span>{k}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    
+                    <div className="space-y-6">
+                        <div className="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                            <div className="flex justify-between items-center mb-4">
+                                <h3 className="text-lg font-semibold">{editingTokenName ? `Edit Token: ${editingTokenName}` : 'Provision Machine Token'}</h3>
+                                {editingTokenName && <button onClick={cancelEdit} className="text-gray-400 hover:text-gray-200 text-sm">Cancel Edit</button>}
+                            </div>
+                            <form onSubmit={handleCreate} className="space-y-4">
+                                <div>
+                                    <label className="block text-xs text-gray-400 mb-1">Identity Name</label>
+                                    <input type="text" required value={name} onChange={e => setName(e.target.value)} disabled={!!editingTokenName} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white text-sm disabled:opacity-50" placeholder="e.g. ci-runner" />
+                                </div>
+                                
+                                <div className="space-y-3">
+                                    <label className="block text-xs text-gray-400">Policies (Prefixes & Methods)</label>
+                                    {policies.map((p, idx) => (
+                                        <div key={idx} className="bg-gray-900/50 p-3 rounded border border-gray-700 space-y-3">
+                                            <div className="flex gap-2">
+                                                <input 
+                                                    type="text" 
+                                                    placeholder="Prefix (e.g. app.dev.)" 
+                                                    value={p.prefix} 
+                                                    onChange={e => updatePolicy(idx, 'prefix', e.target.value)}
+                                                    className="flex-1 bg-gray-900 border border-gray-700 rounded p-2 text-white text-sm font-mono"
+                                                />
+                                                {policies.length > 1 && (
+                                                    <button type="button" onClick={() => removePolicy(idx)} className="text-red-400 hover:text-red-300 text-lg px-2">&times;</button>
+                                                )}
+                                            </div>
+                                            <div className="flex flex-wrap gap-4">
+                                                {['GET', 'LIST', 'PUT', 'DELETE'].map(m => (
+                                                    <label key={m} className="flex items-center gap-2 cursor-pointer select-none">
+                                                        <input 
+                                                            type="checkbox" 
+                                                            checked={p.methods.includes(m)} 
+                                                            onChange={() => toggleMethod(idx, m)}
+                                                            className="w-4 h-4 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <span className="text-xs font-mono text-gray-300">{m}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <button type="button" onClick={addPolicy} className="text-blue-400 hover:text-blue-300 text-xs font-semibold">+ Add Another Prefix</button>
+                                </div>
+
+                                <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 px-4 py-3 rounded text-sm font-bold transition mt-4">
+                                    {editingTokenName ? 'Save Policy Changes' : 'Generate Token'}
+                                </button>
+                            </form>
+                        </div>
+                        {generatedToken && (
+                            <div className="bg-green-900/30 p-6 rounded-lg border border-green-800">
+                                <h3 className="text-sm font-semibold text-green-400 mb-2">Token Provisioned</h3>
+                                <p className="text-xs text-gray-400 mb-2">Copy this token now. It cannot be recovered.</p>
+                                <div className="bg-black p-3 rounded font-mono text-sm break-all border border-green-900/50 flex justify-between items-center">
+                                    <span className="select-all">{generatedToken}</span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+>
+                </div>
+            );
+        }

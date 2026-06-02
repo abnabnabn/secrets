@@ -1,0 +1,31 @@
+# Binaries
+bin/
+
+# Configurations with secrets
+config.json
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+# Temporary build files
+init_config.go
+
+# Go specific
+vendor/
+*.test
+*.out
+coverage.txt
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+backups
