@@ -28,6 +28,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Lowercase IMAGE_NAME
+        run: echo "IMAGE_NAME=${IMAGE_NAME,,}" >> $GITHUB_ENV
+
       # Set up BuildKit Docker container builder to be able to build
       # multi-platform images and export cache
       - name: Set up Docker Buildx
@@ -51,7 +54,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=branch,branch=main
+            type=ref,event=branch
             type=sha,format=long
 
       # Build and push Docker image with Buildx (don't push on PR)
