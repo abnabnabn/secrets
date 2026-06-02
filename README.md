@@ -100,6 +100,28 @@ export TSM_TOKEN="your-token-here"
 ./bin/tsm put app.api.key "value"
 ```
 
+**4. Running Applications with Secrets:**
+The `run` command allows you to execute programs with environment variables injected directly from the secrets manager.
+
+*   **Explicit Mapping:** Create a `tsm.env` file in your project root. Each line maps an environment variable name to a TSM secret path:
+    ```text
+    DATABASE_URL=app.prod.db_url
+    API_KEY=app.prod.api_key
+    ```
+*   **Local Overrides:** If a standard `.env` file (literals) exists in the same directory, its values will take priority over TSM secrets, allowing for easy local development overrides.
+*   **Execution:**
+    ```bash
+    # Automatically loads tsm.env and .env
+    ./bin/tsm run -- ./my-app --port 8080
+
+    # Using the Bash CLI:
+    ./tsm.sh run -- ./my-app
+    ```
+*   **CLI Overrides:** You can also pass explicit environment variables that take the highest priority:
+    ```bash
+    ./bin/tsm run -e DEBUG=true -- ./my-app
+    ```
+
 ### Ansible Integration
 To securely fetch secrets dynamically within Ansible playbooks, use the provided lookup plugin in `plugins/ansible/lookup/tsm.py`.
 
