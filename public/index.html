@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secretd Management</title>
+    <title>Tiny Secrets Manager</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -64,7 +64,7 @@
                 <div className="max-w-6xl mx-auto p-6">
                     <header className="flex justify-between items-center mb-8 border-b border-gray-800 pb-4">
                         <div>
-                            <h1 className="text-2xl font-bold flex items-center gap-3">Secretd</h1>
+                            <h1 className="text-2xl font-bold flex items-center gap-3">Tiny Secrets Manager</h1>
                             <p className="text-sm text-gray-400">Authenticated as: <span className="text-blue-400">{identity.name}</span> {identity.is_admin && '(Admin)'}</p>
                         </div>
                         <button onClick={logout} className="bg-red-900/50 hover:bg-red-800 text-red-200 px-4 py-2 rounded transition">
@@ -239,7 +239,7 @@
             }, [selectedToken]);
 
             const groupedSecrets = useMemo(() => {
-                if (!selectedToken) return [{ name: 'All Vault Secrets', methods: ['*'], items: secrets }];
+                if (!selectedToken) return [{ name: 'All Secrets Manager Secrets', methods: ['*'], items: secrets }];
 
                 const groups = selectedToken.policies.map(p => ({
                     name: `Prefix: ${p.prefix}`,
@@ -333,7 +333,7 @@
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="bg-gray-800 rounded-lg border border-gray-700 flex flex-col overflow-hidden">
                         <div className="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-850">
-                            <h3 className="text-lg font-semibold">Vault Paths</h3>
+                            <h3 className="text-lg font-semibold">Secret Paths</h3>
                             <div className="flex gap-2">
                                 {identity.is_admin && !isAdding && !isEditing && (
                                     <button 
@@ -344,14 +344,14 @@
                                         Add Secret
                                     </button>
                                 )}
-                                {identity.is_admin && (
+                                {identity.is_admin && tokens.filter(t => t.name !== identity.name).length > 0 && (
                                     <select 
                                         className="bg-gray-900 border border-gray-600 rounded p-1 text-sm text-gray-200 focus:outline-none"
                                         value={filterTokenName}
                                         onChange={(e) => setFilterTokenName(e.target.value)}
                                     >
-                                        <option value="">View As: Master (Unfiltered)</option>
-                                        {tokens.map(t => <option key={t.name} value={t.name}>View As: {t.name}</option>)}
+                                        <option value="">View As: admin</option>
+                                        {tokens.filter(t => t.name !== identity.name).map(t => <option key={t.name} value={t.name}>View As: {t.name}</option>)}
                                     </select>
                                 )}
                             </div>

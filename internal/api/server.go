@@ -1,4 +1,4 @@
-// Package api implements the HTTP vault interface, providing endpoints for
+// Package api implements the HTTP secrets manager interface, providing endpoints for
 // secret management, token provisioning, and administrative tasks.
 package api
 
@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"secretd/internal/config"
-	"secretd/internal/store"
+	"tiny-secrets-manager/internal/config"
+	"tiny-secrets-manager/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -36,7 +36,7 @@ type Client struct {
 }
 
 // Can evaluates if the client has permission to perform a specific HTTP method
-// on a given vault path, respecting strict segment matching and wildcards.
+// on a given secrets manager path, respecting strict segment matching and wildcards.
 func (c Client) Can(method, path string) bool {
 	if c.IsAdmin {
 		return true
@@ -83,7 +83,7 @@ func NewServer(s *store.Store, cfg *config.Config, logger *slog.Logger) *Server 
 	}
 }
 
-// RegisterRoutes maps the vault's API endpoints to their respective handlers.
+// RegisterRoutes maps the secrets manager's API endpoints to their respective handlers.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /v1/auth/logout", s.handleLogout)
@@ -180,7 +180,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     "secretd_admin",
+		Name:     "tsm_admin",
 		Value:    sessionToken,
 		Path:     "/",
 		HttpOnly: true,
@@ -193,7 +193,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "secretd_admin",
+		Name:     "tsm_admin",
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -212,7 +212,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 			tokenStr = strings.TrimPrefix(h, "Bearer ")
-		} else if cookie, err := r.Cookie("secretd_admin"); err == nil {
+		} else if cookie, err := r.Cookie("tsm_admin"); err == nil {
 			tokenStr = cookie.Value
 		}
 
@@ -472,9 +472,19 @@ func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+
+	// Filter out internal session tokens and the default admin token
+	filtered := make([]store.TokenRecord, 0)
+	for _, t := range tokens {
+		if !strings.HasPrefix(t.Name, "session_") && t.Name != "admin" {
+			filtered = append(filtered, t)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tokens)
-}
+	json.NewEncoder(w).Encode(filtered)
+	}
+
 
 func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	client := r.Context().Value(clientCtxKey).(Client)

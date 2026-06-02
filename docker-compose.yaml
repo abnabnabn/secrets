@@ -1,13 +1,13 @@
 services:
-  secretd:
+  tsm-server:
     build: .
     ports:
       - "8090:8090"
     environment:
-      - SECRETD_MASTER_KEY=${SECRETD_MASTER_KEY:-dev-master-key-32-chars-long-!!!}
-      - SECRETD_ADMIN_USER=${SECRETD_ADMIN_USER:-admin}
-      - SECRETD_ADMIN_PASS=${SECRETD_ADMIN_PASS:-admin-password}
-      - SECRETD_ADMIN_TOKEN=${SECRETD_ADMIN_TOKEN} # Leave empty to auto-generate or provide one
+      - TSM_MASTER_KEY=${TSM_MASTER_KEY:-dev-master-key-32-chars-long-!!!}
+      - TSM_ADMIN_USER=${TSM_ADMIN_USER:-admin}
+      - TSM_ADMIN_PASS=${TSM_ADMIN_PASS:-admin-password}
+      - TSM_ADMIN_TOKEN=${TSM_ADMIN_TOKEN} # Leave empty to auto-generate or provide one
     volumes:
       - ./data:/data
     restart: unless-stopped

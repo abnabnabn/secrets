@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-# Minimal Bash CLI for secretd
+# Minimal Bash CLI for tsm
 # Dependencies: curl, jq
 
-CONFIG_FILE="$HOME/.secretd.json"
+CONFIG_FILE="$HOME/.tsm.json"
 
 usage() {
     echo "Usage: secret.sh <command> [arguments]"
@@ -16,13 +16,13 @@ usage() {
     echo "  login <url> <token> - Save credentials to $CONFIG_FILE"
     echo ""
     echo "Configuration:"
-    echo "  Environment variables SECRETD_URL and SECRETD_TOKEN override the config file."
+    echo "  Environment variables TSM_URL and TSM_TOKEN override the config file."
     exit 1
 }
 
 # Load credentials
-URL="${SECRETD_URL}"
-TOKEN="${SECRETD_TOKEN}"
+URL="${TSM_URL}"
+TOKEN="${TSM_TOKEN}"
 
 if [[ -z "$URL" || -z "$TOKEN" ]]; then
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -42,7 +42,7 @@ fi
 
 # Ensure URL and TOKEN are set for other commands
 if [[ -z "$URL" || -z "$TOKEN" ]]; then
-    echo "Error: SECRETD_URL and SECRETD_TOKEN must be set via env vars or 'secret.sh login'" >&2
+    echo "Error: TSM_URL and TSM_TOKEN must be set via env vars or 'secret.sh login'" >&2
     exit 1
 fi
 

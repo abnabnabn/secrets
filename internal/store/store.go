@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"secretd/internal/crypto"
+	"tiny-secrets-manager/internal/crypto"
 	_ "modernc.org/sqlite"
 )
 
@@ -412,4 +412,11 @@ func (s *Store) GetAdmin(ctx context.Context, username string) (string, error) {
 	var hash string
 	err := s.db.QueryRowContext(ctx, "SELECT password_hash FROM admins WHERE username = ?", username).Scan(&hash)
 	return hash, err
+}
+
+// CountAdmins returns the number of administrative accounts in the database.
+func (s *Store) CountAdmins(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM admins").Scan(&count)
+	return count, err
 }

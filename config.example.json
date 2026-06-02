@@ -1,4 +1,4 @@
 {
   "listen": "0.0.0.0:8090",
-  "db_path": "secretd.db"
+  "db_path": "tsm.db"
 }

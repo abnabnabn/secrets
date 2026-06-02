@@ -15,8 +15,8 @@ COPY . .
 # CGO is disabled for the static runtime
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w" \
-    -o secretd \
-    ./cmd/secretd/main.go
+    -o tiny-secrets-manager \
+    ./cmd/tsm-server/main.go
 
 # Production Stage
 # Using Chainguard's static image for maximum security and minimal size
@@ -25,15 +25,15 @@ FROM cgr.dev/chainguard/static:latest
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/secretd .
+COPY --from=builder /app/tiny-secrets-manager .
 
 # Default configuration environment variables
-ENV SECRETD_LISTEN=0.0.0.0:8090
-ENV SECRETD_DB_PATH=/data/secretd.db
+ENV TSM_LISTEN=0.0.0.0:8090
+ENV TSM_DB_PATH=/data/tsm.db
 
 # Expose the service port
 EXPOSE 8090
 
 # Command to run the service
-# Note: SECRETD_ADMIN_TOKEN and SECRETD_MASTER_KEY should be provided at runtime
-ENTRYPOINT ["./secretd"]
+# Note: TSM_ADMIN_TOKEN and TSM_MASTER_KEY should be provided at runtime
+ENTRYPOINT ["./tiny-secrets-manager"]

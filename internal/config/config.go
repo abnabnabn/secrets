@@ -27,7 +27,7 @@ type Config struct {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Listen: "0.0.0.0:8090",
-		DBPath: "secretd.db",
+		DBPath: "tsm.db",
 	}
 
 	if path != "" {
@@ -41,16 +41,16 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	if envKey := os.Getenv("SECRETD_MASTER_KEY"); envKey != "" {
+	if envKey := os.Getenv("TSM_MASTER_KEY"); envKey != "" {
 		cfg.MasterKey = envKey
 	}
-	if envListen := os.Getenv("SECRETD_LISTEN"); envListen != "" {
+	if envListen := os.Getenv("TSM_LISTEN"); envListen != "" {
 		cfg.Listen = envListen
 	}
-	if envDB := os.Getenv("SECRETD_DB_PATH"); envDB != "" {
+	if envDB := os.Getenv("TSM_DB_PATH"); envDB != "" {
 		cfg.DBPath = envDB
 	}
-	if envBackupTarget := os.Getenv("SECRETD_BACKUP_TARGET"); envBackupTarget != "" {
+	if envBackupTarget := os.Getenv("TSM_BACKUP_TARGET"); envBackupTarget != "" {
 		cfg.BackupTarget = envBackupTarget
 	}
 

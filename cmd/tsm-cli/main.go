@@ -56,16 +56,16 @@ func usage() {
 	fmt.Println("  put <key> <value>   - Store a secret value")
 	fmt.Println("  ls [prefix]         - List all available secret keys")
 	fmt.Println("  rm <key>            - Permanently delete a secret")
-	fmt.Println("  login <url> <token> - Save credentials to ~/.secretd.json")
+	fmt.Println("  login <url> <token> - Save credentials to ~/.tsm.json")
 	fmt.Println("\nConfiguration:")
-	fmt.Println("  Environment variables SECRETD_URL and SECRETD_TOKEN override the config file.")
+	fmt.Println("  Environment variables TSM_URL and TSM_TOKEN override the config file.")
 	os.Exit(1)
 }
 
 func loadConfig() *Config {
 	cfg := &Config{
-		URL:   os.Getenv("SECRETD_URL"),
-		Token: os.Getenv("SECRETD_TOKEN"),
+		URL:   os.Getenv("TSM_URL"),
+		Token: os.Getenv("TSM_TOKEN"),
 	}
 
 	if cfg.URL != "" && cfg.Token != "" {
@@ -73,7 +73,7 @@ func loadConfig() *Config {
 	}
 
 	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".secretd.json")
+	path := filepath.Join(home, ".tsm.json")
 	if b, err := os.ReadFile(path); err == nil {
 		var saved Config
 		if err := json.Unmarshal(b, &saved); err == nil {
@@ -83,7 +83,7 @@ func loadConfig() *Config {
 	}
 
 	if cfg.URL == "" || cfg.Token == "" {
-		fmt.Fprintln(os.Stderr, "Error: SECRETD_URL and SECRETD_TOKEN must be set via env vars or 'secret login'")
+		fmt.Fprintln(os.Stderr, "Error: TSM_URL and TSM_TOKEN must be set via env vars or 'secret login'")
 		os.Exit(1)
 	}
 	cfg.URL = strings.TrimSuffix(cfg.URL, "/")
@@ -93,7 +93,7 @@ func loadConfig() *Config {
 func saveLogin(url, token string) {
 	home, err := os.UserHomeDir()
 	if err != nil { panic(err) }
-	path := filepath.Join(home, ".secretd.json")
+	path := filepath.Join(home, ".tsm.json")
 	
 	cfg := Config{URL: url, Token: token}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
@@ -123,7 +123,7 @@ func apiRequest(cfg *Config, method, path string, body []byte) []byte {
 		os.Exit(1)
 	}
 	if resp.StatusCode == http.StatusForbidden {
-		fmt.Fprintln(os.Stderr, "Error: Access denied by vault policies")
+		fmt.Fprintln(os.Stderr, "Error: Access denied by access policies")
 		os.Exit(1)
 	}
 	if resp.StatusCode == http.StatusNotFound {
@@ -132,7 +132,7 @@ func apiRequest(cfg *Config, method, path string, body []byte) []byte {
 	}
 	if resp.StatusCode >= 400 {
 		msg, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "Vault error (%d): %s\n", resp.StatusCode, string(msg))
+		fmt.Fprintf(os.Stderr, "Server error (%d): %s\n", resp.StatusCode, string(msg))
 		os.Exit(1)
 	}
 

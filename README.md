@@ -1,6 +1,6 @@
-# secretd
+# Tiny Secrets Manager
 
-A lightweight, high-performance, XChaCha20-Poly1305 encrypted secrets vault backed by a pure Go SQLite implementation. Designed for localized machine-to-machine (M2M) deployments and administrative ease, providing a secure, hardened enclosure for sensitive configuration.
+A lightweight, high-performance, XChaCha20-Poly1305 encrypted secrets manager backed by a pure Go SQLite implementation. Designed for localized machine-to-machine (M2M) deployments and administrative ease, providing a secure, hardened enclosure for sensitive configuration.
 
 ## Key Features
 
@@ -18,65 +18,60 @@ A lightweight, high-performance, XChaCha20-Poly1305 encrypted secrets vault back
 
 ## Getting Started
 
-### 1. Quick Setup (Local)
-The `setup` target initializes Go modules, generates a `config.json` with a secure random master key, and seeds the initial administrative user into the encrypted database.
+### 1. Installation & Setup
+Follow these steps in order to prepare and start the Tiny Secrets Manager.
 
 ```bash
-# Generate configuration and seed admin credentials
+# 1. Initialize the project (tidies modules and builds all binaries)
 make setup
+
+# 2. Start the server
+# Option A: Zero-Config (Random credentials will be generated and printed)
+make run
+
+# Option B: Custom Admin (Set your own credentials on first boot)
+TSM_ADMIN_USER=admin TSM_ADMIN_PASS=mypassword make run
 ```
 
-#### Customizing Admin Credentials
-By default, `make setup` generates a random password for the `admin` user. You can provide a custom username and password during setup using environment variables:
+### 2. Self-Bootstrapping
+The `tiny-secrets-manager` binary is designed to be self-sufficient. If no `config.json` is found on the first run, it will:
+1.  **Generate Infrastructure:** Creates a `config.json` with a random 256-bit Master Key.
+2.  **Initialize Database:** Creates an encrypted `tsm.db` enclosure.
+3.  **Seed Admin:** Creates the initial administrator account.
+4.  **Display Credentials:** **The initial username, password, and API token will be printed to the console exactly once.**
 
+### 3. Environment Variables
+You can customize the server's behavior by passing environment variables. These can be used with `make run` or when executing the binary directly.
+
+| Variable | Usage | Default |
+|----------|-------|---------|
+| `TSM_ADMIN_USER` | (Seed Only) Custom username for initial admin. | `admin` |
+| `TSM_ADMIN_PASS` | (Seed Only) Custom password for initial admin. | *Random* |
+| `TSM_ADMIN_TOKEN`| (Seed Only) Custom API token for initial admin. | *Random* |
+| `TSM_MASTER_KEY` | 32-byte Base64 encryption key. | *Auto-generated* |
+| `TSM_LISTEN` | Bind address and port. | `0.0.0.0:8090` |
+| `TSM_DB_PATH` | Path to the SQLite database file. | `tsm.db` |
+
+**Example: Starting with a custom port and admin password**
 ```bash
-ADMIN_USER=myadmin ADMIN_PASS=mypassword make setup
+TSM_LISTEN="127.0.0.1:9000" TSM_ADMIN_PASS="secure-password" ./bin/tiny-secrets-manager
 ```
 
-> **Note:** These credentials are encrypted and stored inside the database enclosure. They are **never** stored in `config.json`.
-
-### 2. Running with Docker (Recommended)
-The project includes a `Dockerfile` using Chainguard's hardened images.
+### 4. Running with Docker (Recommended)
+The project includes a hardened `Dockerfile` based on Chainguard images.
 
 ```bash
-# Start the vault with Docker Compose
+# Start with Docker Compose
 docker compose up -d
 ```
-
-#### Docker Custom Configuration
-To use custom credentials with Docker, you must seed them during the initial volume creation or provide them via environment variables on the first run. The vault stores admin credentials in the encrypted database, not in the environment after the first boot.
-
-**Seeding a custom admin on first run:**
-```bash
-# In your docker-compose.yaml or .env:
-SECRETD_ADMIN_USER=myadmin
-SECRETD_ADMIN_PASS=mypassword
-SECRETD_ADMIN_TOKEN=my-secure-api-token
-```
-
-**Global Environment Variables:**
-| Environment Variable | Description |
-|----------------------|-------------|
-| `SECRETD_MASTER_KEY` | 32-byte Base64 encoded master encryption key. |
-| `SECRETD_BACKUP_TARGET` | Local path (`/backups/db.bak`) or SCP target (`user@host:/path/`). |
-| `SECRETD_LISTEN` | Listen address (default: `0.0.0.0:8090`). |
-| `SECRETD_ADMIN_USER` | (Seed Only) Username for initial admin creation. |
-| `SECRETD_ADMIN_PASS` | (Seed Only) Password for initial admin creation. |
-| `SECRETD_ADMIN_TOKEN` | (Seed Only) Token for initial admin API access. |
-
-**Generating a Bcrypt Hash:**
-If you need to generate a password hash manually (e.g., for manual database inserts):
-```bash
-# Generate a hash for 'mypassword' using the secretd binary
-go run ./cmd/secretd --hash mypassword
-```
+*Note: You can edit the `environment` section in `docker-compose.yaml` to set your initial credentials.*
 
 ## API & Integration
 
 ### Standalone CLI
 The project includes two versions of a standalone CLI for managing secrets:
-1.  **Go CLI (`bin/secret`)**: Robust, statically linked (no dependencies), works on any OS. (~6MB)
-2.  **Bash CLI (`secret.sh`)**: Extremely minimal (~2KB), requires `curl` and `jq`.
+1.  **Go CLI (`bin/tsm`)**: Robust, statically linked (no dependencies), works on any OS. (~6MB)
+2.  **Bash CLI (`tsm.sh`)**: Extremely minimal (~2KB), requires `curl` and `jq`.
 
 **1. Setup:**
 ```bash
@@ -84,29 +79,29 @@ The project includes two versions of a standalone CLI for managing secrets:
 make build-cli
 
 # To use the Bash CLI:
-chmod +x secret.sh
+chmod +x tsm.sh
 ```
 
 **2. Configuration:**
 Set environment variables or use the `login` command:
 ```bash
 # Option A: Environment Variables
-export SECRETD_URL="http://localhost:8090"
-export SECRETD_TOKEN="your-token-here"
+export TSM_URL="http://localhost:8090"
+export TSM_TOKEN="your-token-here"
 
 # Option B: Persistent Login
-./bin/secret login http://localhost:8090 your-token-here
+./bin/tsm login http://localhost:8090 your-token-here
 ```
 
 **3. Usage Examples:**
 ```bash
-./bin/secret ls
-./bin/secret get app.db.password
-./bin/secret put app.api.key "value"
+./bin/tsm ls
+./bin/tsm get app.db.password
+./bin/tsm put app.api.key "value"
 ```
 
 ### Ansible Integration
-To securely fetch secrets dynamically within Ansible playbooks, use the provided lookup plugin in `plugins/ansible/lookup/secretd.py`.
+To securely fetch secrets dynamically within Ansible playbooks, use the provided lookup plugin in `plugins/ansible/lookup/tsm.py`.
 
 **Example Playbook Usage:**
 ```yaml
@@ -115,12 +110,14 @@ To securely fetch secrets dynamically within Ansible playbooks, use the provided
     name: my_db
     image: postgres:latest
     env:
-      POSTGRES_PASSWORD: "{{ lookup('secretd', 'app.db.password') }}"
+      POSTGRES_PASSWORD: "{{ lookup('tsm', 'app.db.password') }}"
 ```
 
 ## Development
 
-* **Build:** `make build` - Generates a stripped, optimized binary.
-* **Test:** `make test` - Runs the Go test suite (race detector enabled).
-* **Setup:** `make setup` - Scaffolds configuration and keys.
-* **Clean:** `make clean` - Removes binaries and local database files.
+*   **`make setup`**: Full initialization (tidy + build). Recommended for first-time use.
+*   **`make build`**: Compiles stripped, optimized binaries for the server and CLI.
+*   **`make run`**: Builds the server and starts it.
+*   **`make test`**: Runs the Go test suite with the race detector enabled.
+*   **`make clean`**: Removes binaries, local database files, and the `config.json`.
+*   **`make tidy`**: Cleans up and synchronizes Go module dependencies.
