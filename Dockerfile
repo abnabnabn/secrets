@@ -2,6 +2,10 @@
 # Using Chainguard's Go image for a secure, hardened build environment
 FROM cgr.dev/chainguard/go:latest AS builder
 
+# Build arguments provided by Docker Buildx for multi-arch builds
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /app
 
 # Copy go mod and sum files
@@ -13,7 +17,7 @@ COPY . .
 
 # Build the binary with optimizations and static linking
 # CGO is disabled for the static runtime
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w" \
     -o tiny-secrets-manager \
     ./cmd/tsm-server/main.go
