@@ -8,13 +8,13 @@ You might be thinking why another secrets manager? We got sick of managing secre
 We had some fairly simple requirements - we *really* didn't want to lose the secrets, wanted it to be lightweight and not use up much ram (so it can run in limited resources), and we wanted to be able to control what apps could see what keys.  
 Surely someone must have done this already? Maybe they have, but if so it was too hard to find!  Some options seemed pretty heavy (eg hashicorp vault), some have a load of nodejs or python overheads which made them too big, some didn't have a backup mechanism that worked well for us, and others seemed like they were no longer being actively maintained.
 
-So, introducing **Tiny Secrets Manager**. It's tiny (~10KB), gives you granular key-level control, and backs up instantly whenever a key changes. It has an admin GUI, a CLI, emergency recovery keys, and even an Ansible plugin. It's also fully container-friendly, with pre-built, hardened images ready for x86 and ARM.
+So, introducing **Tiny Secrets Manager**. It's tiny (~10MB), gives you granular key-level control, and backs up instantly whenever a key changes. It has an admin GUI, a CLI, emergency recovery keys, and even an Ansible plugin. It's also fully container-friendly, with pre-built, hardened images ready for x86 and ARM.
 
 If there are features you want that aren't included, raise a feature request—we will add anything useful to our backlog as long as it aligns with our core values (tiny, safe, fully local).
 
 ## Key Features
 
-* **Ultra-Lightweight Footprint:** Statically compiled binary (~10KB) with zero-dependency execution and extremely low memory overhead.
+* **Ultra-Lightweight Footprint:** Statically compiled binary (~10MB) with zero-dependency execution and extremely low memory overhead.
 * **Secure by Design:** Uses XChaCha20-Poly1305 envelope encryption. Secrets are encrypted with an ephemeral 256-bit Data Encryption Key (DEK), which is itself wrapped in multiple "slots" using a primary Master Key and three emergency Recovery Keys.
 * **Role-Based Access Control (RBAC):** Restrict application permissions down to individual keys or custom groups of keys using policy-driven Roles, ensuring clients and machines only see authorized secrets.
 * **Interactive Admin GUI & CLI:** A built-in React management interface for visual audits and permissions simulation, paired with a robust CLI supporting context-based token resolution.
