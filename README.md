@@ -1,23 +1,30 @@
 # Tiny Secrets Manager
 
-[![Build and Publish Docker Image](https://github.com/abnabnabn/secrets/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/abnabnabn/secrets/actions/workflows/docker-publish.yml)
+[![Build and Publish Docker Image](https://github.com/abnabnabn/tiny-secrets-manager/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/abnabnabn/tiny-secrets-manager/actions/workflows/docker-publish.yml)
 
-A lightweight, high-performance, XChaCha20-Poly1305 encrypted secrets manager backed by a pure Go SQLite implementation.
- Designed for localized machine-to-machine (M2M) deployments and administrative ease, providing a secure, hardened enclosure for sensitive configuration.
+
+You might be thinking why another secrets manager? We got sick of managing secrets and env file across multiple projects and different computers, and decided to use a password manage to take care of all of this.
+
+We had some fairly simple requirements - we *really* didn't want to lose the secrets, wanted it to be lightweight and not use up much ram (so it can run in limited resources), and we wanted to be able to control what apps could see what keys.  
+Surely someone must have done this already? Maybe they have, but if so it was too hard to find!  Some options seemed pretty heavy (eg hashicorp vault), some have a load of nodejs or python overheads which made them too big, some didn't have a backup mechanism that worked well for us, and others seemed like they were no longer being actively maintained.
+
+So, introducing **Tiny Secrets Manager**. It's tiny (~10KB), gives you granular key-level control, and backs up instantly whenever a key changes. It has an admin GUI, a CLI, emergency recovery keys, and even an Ansible plugin. It's also fully container-friendly, with pre-built, hardened images ready for x86 and ARM.
+
+If there are features you want that aren't included, raise a feature request—we will add anything useful to our backlog as long as it aligns with our core values (tiny, safe, fully local).
 
 ## Key Features
 
+* **Ultra-Lightweight Footprint:** Statically compiled binary (~10KB) with zero-dependency execution and extremely low memory overhead.
 * **Secure by Design:** Uses XChaCha20-Poly1305 envelope encryption. Secrets are encrypted with an ephemeral 256-bit Data Encryption Key (DEK), which is itself wrapped in multiple "slots" using a primary Master Key and three emergency Recovery Keys.
+* **Role-Based Access Control (RBAC):** Restrict application permissions down to individual keys or custom groups of keys using policy-driven Roles, ensuring clients and machines only see authorized secrets.
+* **Interactive Admin GUI & CLI:** A built-in React management interface for visual audits and permissions simulation, paired with a robust CLI supporting context-based token resolution.
+* **Offline-Ready:** All front-end assets (React, Tailwind CSS) are bundled directly into the Go binary. No internet access is required to run or manage the server in air-gapped environments.
 * **Pure Go SQLite:** Built with `modernc.org/sqlite`, ensuring zero-CGO portability and a simplified supply chain. Operates in WAL mode for high concurrency.
-* **Advanced Access Control:** Granular Policy-Based Access Control (PBAC). Tokens can be restricted to specific key prefixes (using dot-notation like `app.dev.db`) and specific operations (`GET`, `LIST`, `PUT`, `DELETE`).
-* **Interactive Admin GUI:** A built-in React/Tailwind management interface allows admins to:
-    * Manage secrets with full CRUD support.
-    * Provision, edit, and clone machine tokens.
-    * **Audit Mode:** "View As" any token to simulate and verify its exact permission boundary.
 * **Automated Disaster Recovery:** 
-    * Every change triggers an automated, consistent database backup using `VACUUM INTO`.
+    * Every change triggers an automated database backup using `VACUUM INTO` on every addition or change.
     * Supports both local filesystem targets and remote off-site backups via `scp`.
-* **Hardened Deployment:** Optimized for containerization using minimal **Chainguard** base images for maximum security and minimal attack surface.
+* **Ansible Lookup Plugin:** Integrates secrets retrieval directly into your IaC process for automated configuration management.
+* **Hardened Containerization:** Pre-built multi-architecture (Linux x86 and ARM) Chainguard-based images optimized for containerized environments with a minimal attack surface.
 
 ## Getting Started
 
@@ -43,21 +50,37 @@ The `tiny-secrets-manager` binary is designed to be self-sufficient. If no `conf
 3.  **Seed Admin:** Creates the initial administrator account.
 4.  **Display Credentials:** **The initial username, password, and API token will be printed to the console exactly once.**
 
-### 3. Environment Variables
-You can customize the server's behavior by passing environment variables. These can be used with `make run` or when executing the binary directly.
+### 3. Environment Variables & CLI Options
+You can customize the server's behavior by passing environment variables or CLI flags. These can be used with `make run` or when executing the binary directly.
 
-| Variable | Usage | Default |
-|----------|-------|---------|
+| Variable / Flag | Usage | Default |
+|-----------------|-------|---------|
 | `TSM_ADMIN_USER` | (Seed Only) Custom username for initial admin. | `admin` |
 | `TSM_ADMIN_PASS` | (Seed Only) Custom password for initial admin. | *Random* |
 | `TSM_ADMIN_TOKEN`| (Seed Only) Custom API token for initial admin. | *Random* |
 | `TSM_MASTER_KEY` | 32-byte Base64 encryption key. | *Auto-generated* |
 | `TSM_LISTEN` | Bind address and port. | `0.0.0.0:8090` |
 | `TSM_DB_PATH` | Path to the SQLite database file. | `tsm.db` |
+| `TSM_INSECURE` or `--insecure` | Bypass HTTPS enforcement and use less strict (Lax) cookie settings. Useful for local development over HTTP. | `false` |
+
+**Security Note (Secure by Default):**
+By default, Tiny Secrets Manager operates in **Secure Mode**. In this mode:
+* Cookies are set with `SameSite: Strict` and `Secure: true`.
+* HTTP traffic is automatically redirected to HTTPS (GET requests) or rejected with `403 Forbidden` (non-GET requests).
+* Security headers (`Strict-Transport-Security` / HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`) are actively injected.
+
+To run locally without SSL/TLS (e.g. over plain HTTP on localhost), pass the `--insecure` flag or set the `TSM_INSECURE=true` environment variable:
+```bash
+# Run with CLI flag
+./bin/tiny-secrets-manager --insecure
+
+# Run with environment variable
+TSM_INSECURE=true ./bin/tiny-secrets-manager
+```
 
 **Example: Starting with a custom port and admin password**
 ```bash
-TSM_LISTEN="127.0.0.1:9000" TSM_ADMIN_PASS="secure-password" ./bin/tiny-secrets-manager
+TSM_LISTEN="127.0.0.1:9000" TSM_ADMIN_PASS="secure-password" ./bin/tiny-secrets-manager --insecure
 ```
 
 ### 4. Running with Docker (Recommended)
@@ -75,10 +98,14 @@ docker compose up -d
 The project includes a robust, statically linked Go CLI for managing and injecting secrets.
 
 **1. Setup:**
-```bash
-# Build the Go CLI
-make build-cli
-```
+
+*   **Option A: Download Binary (Recommended)**
+    Download the pre-compiled binary for your OS and architecture from the **[GitHub Releases](https://github.com/abnabnabn/tiny-secrets-manager/releases)** page.
+*   **Option B: Build from Source**
+    ```bash
+    # Requires Go 1.25+
+    make build-cli
+    ```
 
 **2. Configuration:**
 Tiny Secrets Manager uses a **Context-Based Authentication** system. Instead of global environment variables, you link specific directories to specific machine tokens. This information is stored in a protected central file (`~/.tsm.json`).
@@ -118,7 +145,7 @@ The `run` command allows you to execute programs with environment variables inje
     ```text
     DATABASE_URL=app.prod.db_url
     API_KEY=app.prod.api_key
-    ```
+```
 *   **Automatic Resolution:** The CLI resolves the token based on your current directory context.
 *   **Explicit Token (Override):** You can manually provide a token for a single run using the `--token` flag:
     ```bash

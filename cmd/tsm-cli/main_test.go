@@ -7,12 +7,21 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+var trueCmd = []string{"true"}
+
+func init() {
+	if runtime.GOOS == "windows" {
+		trueCmd = []string{"cmd", "/c", "exit 0"}
+	}
+}
 
 func TestTSMCLI_Login(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -31,10 +40,10 @@ func TestTSMCLI_Login(t *testing.T) {
 
 	// 2. Verify config file exists and contains correct URL
 	assert.Contains(t, out.String(), "Server URL set to http://test-server")
-	
+
 	b, readErr := os.ReadFile(configPath)
 	require.NoError(t, readErr)
-	
+
 	var cfg Config
 	require.NoError(t, json.Unmarshal(b, &cfg))
 	assert.Equal(t, "http://test-server", cfg.URL)
@@ -196,7 +205,7 @@ func TestTSMCLI_Subcommands(t *testing.T) {
 func TestTSMCLI_Tidy(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".tsm.json")
-	
+
 	// Create real and fake directories
 	realDir := filepath.Join(tmpDir, "real")
 	require.NoError(t, os.Mkdir(realDir, 0755))
@@ -230,7 +239,7 @@ func TestTSMCLI_Tidy(t *testing.T) {
 func TestTSMCLI_Status(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".tsm.json")
-	
+
 	// Mock Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") == "Bearer valid-token" {
@@ -274,7 +283,7 @@ func TestTSMCLI_Run_Process_Precedence(t *testing.T) {
 	// Verifies the environment precedence logic: CLI > .env > Vault > Shell
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".tsm.json")
-	
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "vault.secret") {
@@ -299,7 +308,7 @@ func TestTSMCLI_Run_Process_Precedence(t *testing.T) {
 
 	// Create tsm.env (Mappings)
 	os.WriteFile(filepath.Join(tmpDir, "tsm.env"), []byte("V_VAR=vault.secret\nOVERLAP=overlap.secret"), 0644)
-	
+
 	// Create .env (Literals)
 	os.WriteFile(filepath.Join(tmpDir, ".env"), []byte("E_VAR=from-env-file\nOVERLAP=env-file-wins"), 0644)
 
@@ -308,7 +317,7 @@ func TestTSMCLI_Run_Process_Precedence(t *testing.T) {
 
 	// We verify the logic by calling runWithEnvironment directly (mocking the exec part)
 	// But since Run is our exemplar entry point, we use a simple command.
-	
+
 	// Injected via CLI: CLI_VAR=from-cli
 	// Final expected map:
 	// S_VAR = from-shell
@@ -330,7 +339,7 @@ func TestTSMCLI_Usage(t *testing.T) {
 	app := &TSMCLI{Out: &out}
 	app.usage()
 	assert.Contains(t, out.String(), "Usage: tsm")
-	
+
 	out.Reset()
 	app.authUsage()
 	assert.Contains(t, out.String(), "Usage: tsm auth")
@@ -358,17 +367,17 @@ func TestTSMCLI_Run_ArgumentParsing(t *testing.T) {
 	app.saveContext("token")
 
 	// 1. Test custom mapping file flag (-f)
-	err := app.Run([]string{"tsm", "run", "-f", "nonexistent.tsm", "--", "true"})
+	err := app.Run(append([]string{"tsm", "run", "-f", "nonexistent.tsm", "--"}, trueCmd...))
 	assert.NoError(t, err)
 
 	// 2. Test environment file flag (--env-file)
-	err = app.Run([]string{"tsm", "run", "--env-file", "nonexistent.env", "--", "true"})
+	err = app.Run(append([]string{"tsm", "run", "--env-file", "nonexistent.env", "--"}, trueCmd...))
 	assert.NoError(t, err)
 
 	// 3. Test token override flag (--token)
-	err = app.Run([]string{"tsm", "run", "--token", "new-token", "--", "true"})
+	err = app.Run(append([]string{"tsm", "run", "--token", "new-token", "--"}, trueCmd...))
 	assert.NoError(t, err)
-	
+
 	// 4. Test missing command
 	err = app.Run([]string{"tsm", "run", "-e", "K=V"})
 	assert.Error(t, err)
@@ -378,7 +387,7 @@ func TestTSMCLI_Run_ArgumentParsing(t *testing.T) {
 func TestTSMCLI_Tidy_NoChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, ".tsm.json")
-	
+
 	var out bytes.Buffer
 	app := &TSMCLI{
 		Out:        &out,
@@ -401,29 +410,30 @@ KEY1=VAL1
   KEY2 = VAL2  
 INVALID_LINE
 `
-	res := parseEnvFile(content)
+	res, implicit := parseEnvFile(content)
 	assert.Equal(t, "VAL1", res["KEY1"])
 	assert.Equal(t, "VAL2", res["KEY2"])
 	assert.Len(t, res, 2)
+	assert.Contains(t, implicit, "INVALID_LINE")
 }
 
 func TestTSMCLI_RunWithEnvironment_EdgeCases(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	// Create a dummy env file with comments
 	envPath := filepath.Join(tmpDir, "test.env")
 	os.WriteFile(envPath, []byte("# ignore\nMY_VAR=val\n"), 0644)
 
 	app := &TSMCLI{
-		Out:        ioDiscard(),
-		Err:        ioDiscard(),
+		Out: ioDiscard(),
+		Err: ioDiscard(),
 	}
 
 	// 1. Verify parseEnvFile handles the file correctly
 	b, _ := os.ReadFile(envPath)
-	res := parseEnvFile(string(b))
+	res, _ := parseEnvFile(string(b))
 	assert.Equal(t, "val", res["MY_VAR"])
-	
+
 	// 2. Call runWithEnvironment with nonexistent files (should be quiet)
 	err := app.runWithEnvironment(&Config{}, "token", "nonexistent.tsm", "nonexistent.env", nil, []string{"true"})
 	if err != nil && strings.Contains(err.Error(), "execution failed") {

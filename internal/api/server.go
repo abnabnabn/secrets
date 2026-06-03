@@ -4,25 +4,22 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
 	"tiny-secrets-manager/internal/config"
 	"tiny-secrets-manager/internal/store"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type contextKey int
+
 const clientCtxKey contextKey = iota
 
 const maxPayloadBytes = 1 << 20 // 1MB constraint
@@ -92,119 +89,48 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/secrets/{key}", s.auth(s.handleGetSecret))
 	mux.HandleFunc("PUT /v1/secrets/{key}", s.auth(s.handlePutSecret))
 	mux.HandleFunc("DELETE /v1/secrets/{key}", s.auth(s.handleDeleteSecret))
-	mux.HandleFunc("GET /v1/tokens", s.auth(s.handleListTokens))
-	mux.HandleFunc("POST /v1/tokens", s.auth(s.handleCreateToken))
-	mux.HandleFunc("PUT /v1/tokens/{name}", s.auth(s.handleUpdateToken))
-	mux.HandleFunc("DELETE /v1/tokens/{name}", s.auth(s.handleDeleteToken))
+	mux.HandleFunc("GET /v1/roles", s.auth(s.handleListRoles))
+	mux.HandleFunc("POST /v1/roles", s.auth(s.handleCreateRole))
+	mux.HandleFunc("PUT /v1/roles/{name}", s.auth(s.handleUpdateRole))
+	mux.HandleFunc("DELETE /v1/roles/{name}", s.auth(s.handleDeleteRole))
+	mux.HandleFunc("POST /v1/roles/{name}/regenerate", s.auth(s.handleRegenerateRoleToken))
 	mux.HandleFunc("POST /v1/recovery-keys/regenerate", s.auth(s.handleRegenerateRecoveryKeys))
 }
 
-func (s *Server) handleUpdateToken(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+func (s *Server) getSameSiteMode() http.SameSite {
+	if s.cfg.Insecure {
+		return http.SameSiteLaxMode
 	}
-
-	name := r.PathValue("name")
-	if name == "" {
-		http.Error(w, "missing name", http.StatusBadRequest)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxPayloadBytes)
-	var req struct {
-		Policies []config.Policy `json:"policies"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
-
-	policiesJSON, _ := json.Marshal(req.Policies)
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	if err := s.store.UpdateTokenPolicies(ctx, name, policiesJSON); err != nil {
-		s.logger.Error("db update token error", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	go s.triggerBackup()
-	w.WriteHeader(http.StatusNoContent)
+	return http.SameSiteStrictMode
 }
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxPayloadBytes)
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
+// SecurityMiddleware enforces HTTPS redirects, secure headers, and cookie attributes
+// when running in secure mode (i.e. config.Insecure is false).
+func (s *Server) SecurityMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.Insecure {
+			isHTTPS := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+			if !isHTTPS {
+				if r.Method == http.MethodGet {
+					target := "https://" + r.Host + r.URL.RequestURI()
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+				} else {
+					http.Error(w, "HTTPS Required", http.StatusForbidden)
+				}
+				return
+			}
 
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
+			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+		}
 
-	hash, err := s.store.GetAdmin(ctx, req.Username)
-	if err == sql.ErrNoRows {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	} else if err != nil {
-		s.logger.Error("admin lookup failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	// Generate a session token
-	raw := make([]byte, 32)
-	rand.Read(raw)
-	sessionToken := base64.RawURLEncoding.EncodeToString(raw)
-	tokenHash := sha256.Sum256([]byte(sessionToken))
-
-	// Store session token in DB with admin privileges
-	// We use a unique name for each session to avoid collisions
-	sessionName := "session_" + req.Username + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	if err := s.store.PutToken(ctx, sessionName, tokenHash[:], []byte("[]"), true); err != nil {
-		s.logger.Error("failed to store session token", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "tsm_admin",
-		Value:    sessionToken,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400,
+		next.ServeHTTP(w, r)
 	})
-	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "tsm_admin",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// auth is a middleware that handles token authentication and optional 
+// auth is a middleware that handles token authentication and optional
 // admin-driven token impersonation via the X-Impersonate-Token header.
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -227,7 +153,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
 		defer cancel()
 
-		tr, err := s.store.GetTokenByHash(ctx, tokenHash[:])
+		tr, err := s.store.GetRoleByHash(ctx, tokenHash[:])
 		if err == sql.ErrNoRows {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -247,7 +173,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 		if client.IsAdmin {
 			if impersonate := r.Header.Get("X-Impersonate-Token"); impersonate != "" {
-				tr, err := s.store.GetTokenByName(ctx, impersonate)
+				tr, err := s.store.GetRoleByName(ctx, impersonate)
 				if err == nil {
 					client.IsAdmin = false
 					client.Name = tr.Name
@@ -262,105 +188,6 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r.WithContext(context.WithValue(r.Context(), clientCtxKey, client)))
 	}
-}
-
-func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(client)
-}
-
-func (s *Server) handleRegenerateRecoveryKeys(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	keys, err := s.store.RegenerateRecoveryKeys(ctx)
-	if err != nil {
-		s.logger.Error("failed to regenerate recovery keys", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	go s.triggerBackup()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string][]string{"recovery_keys": keys})
-}
-
-func (s *Server) handleGetSecret(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	key := r.PathValue("key")
-	if !client.Can(r.Method, key) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	plaintext, err := s.store.Get(ctx, key)
-	if err == sql.ErrNoRows {
-		http.NotFound(w, r)
-		return
-	} else if err != nil {
-		s.logger.Error("secret retrieval failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"key": key, "value": string(plaintext)})
-}
-
-func (s *Server) handlePutSecret(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	key := r.PathValue("key")
-	if !client.Can(r.Method, key) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxPayloadBytes)
-	var body struct{ Value string `json:"value"` }
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	if err := s.store.Put(ctx, key, []byte(body.Value)); err != nil {
-		s.logger.Error("secret insertion failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	go s.triggerBackup()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleDeleteSecret(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	key := r.PathValue("key")
-	if !client.Can(r.Method, key) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	if err := s.store.Delete(ctx, key); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	go s.triggerBackup()
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // triggerBackup creates a consistent database snapshot and transfers it
@@ -408,135 +235,4 @@ func (s *Server) triggerBackup() {
 	}
 
 	s.logger.Info("remote database backup successful", "target", s.cfg.BackupTarget)
-}
-
-func (s *Server) handleListSecrets(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	var allowedPrefixes []string
-	globalList := false
-
-	if client.IsAdmin {
-		globalList = true
-	} else {
-		for _, p := range client.Policies {
-			for _, m := range p.Methods {
-				if m == "LIST" || m == "*" {
-					if p.Prefix == "*" {
-						globalList = true
-						break
-					}
-					allowedPrefixes = append(allowedPrefixes, p.Prefix)
-				}
-			}
-			if globalList { break }
-		}
-	}
-
-	if !globalList && len(allowedPrefixes) == 0 {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	limit := 1000
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 5000 {
-			limit = l
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	keys, err := s.store.List(ctx, globalList, allowedPrefixes, r.URL.Query().Get("after"), limit)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(keys)
-}
-
-func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	tokens, err := s.store.ListTokens(ctx)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// Filter out internal session tokens and the default admin token
-	filtered := make([]store.TokenRecord, 0)
-	for _, t := range tokens {
-		if !strings.HasPrefix(t.Name, "session_") && t.Name != "admin" {
-			filtered = append(filtered, t)
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(filtered)
-	}
-
-
-func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, maxPayloadBytes)
-	var req struct {
-		Name     string          `json:"name"`
-		Policies []config.Policy `json:"policies"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
-		return
-	}
-
-	policiesJSON, _ := json.Marshal(req.Policies)
-	raw := make([]byte, 32)
-	rand.Read(raw)
-	tokenStr := base64.RawURLEncoding.EncodeToString(raw)
-	hash := sha256.Sum256([]byte(tokenStr))
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	if err := s.store.PutToken(ctx, req.Name, hash[:], policiesJSON, false); err != nil {
-		s.logger.Error("db put token error", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	go s.triggerBackup()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": tokenStr})
-}
-
-func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
-	client := r.Context().Value(clientCtxKey).(Client)
-	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), dbTimeout)
-	defer cancel()
-
-	if err := s.store.DeleteToken(ctx, r.PathValue("name")); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	go s.triggerBackup()
-	w.WriteHeader(http.StatusNoContent)
 }

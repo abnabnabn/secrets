@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -30,7 +31,7 @@ func generateRandomString(n int) string {
 
 func bootstrap(logger *slog.Logger) (*config.Config, error) {
 	configPath := "config.json"
-	
+
 	// 1. Check if we have an existing config
 	if _, err := os.Stat(configPath); err == nil {
 		return config.Load(configPath)
@@ -38,10 +39,10 @@ func bootstrap(logger *slog.Logger) (*config.Config, error) {
 
 	// 2. No config found - Auto-generate infrastructure
 	logger.Info("no configuration found, initiating self-bootstrap...")
-	
+
 	mKey := make([]byte, 32)
 	rand.Read(mKey)
-	
+
 	cfg := &config.Config{
 		MasterKey: base64.StdEncoding.EncodeToString(mKey),
 		Listen:    "0.0.0.0:8090",
@@ -52,7 +53,7 @@ func bootstrap(logger *slog.Logger) (*config.Config, error) {
 	if err := os.WriteFile(configPath, out, 0600); err != nil {
 		return nil, fmt.Errorf("failed to write config: %w", err)
 	}
-	
+
 	logger.Info("infrastructure configuration generated", "path", configPath)
 	return cfg, nil
 }
@@ -72,8 +73,30 @@ func main() {
 	slog.SetDefault(logger)
 
 	var configPath string
-	if len(os.Args) >= 2 {
-		configPath = os.Args[1]
+	var insecureFlag bool
+	var adminUserFlag string
+	var adminPassFlag string
+	var adminTokenFlag string
+	var masterKeyFlag string
+	var listenFlag string
+	var dbPathFlag string
+	var backupTargetFlag string
+	var recoveryKeyFlag string
+
+	flag.BoolVar(&insecureFlag, "insecure", false, "Disable secure mode")
+	flag.StringVar(&adminUserFlag, "admin-user", "", "Admin username")
+	flag.StringVar(&adminPassFlag, "admin-pass", "", "Admin password")
+	flag.StringVar(&adminTokenFlag, "admin-token", "", "Admin API token")
+	flag.StringVar(&masterKeyFlag, "master-key", "", "Master key")
+	flag.StringVar(&listenFlag, "listen", "", "Listen address")
+	flag.StringVar(&dbPathFlag, "db-path", "", "Database path")
+	flag.StringVar(&backupTargetFlag, "backup-target", "", "Backup target")
+	flag.StringVar(&recoveryKeyFlag, "recovery-key", "", "Recovery key")
+
+	flag.Parse()
+
+	if flag.NArg() > 0 {
+		configPath = flag.Arg(0)
 	}
 
 	var cfg *config.Config
@@ -90,7 +113,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	recoveryKey := os.Getenv("TSM_RECOVERY_KEY")
+	if insecureFlag {
+		cfg.Insecure = true
+	}
+	if masterKeyFlag != "" {
+		cfg.MasterKey = masterKeyFlag
+	}
+	if listenFlag != "" {
+		cfg.Listen = listenFlag
+	}
+	if dbPathFlag != "" {
+		cfg.DBPath = dbPathFlag
+	}
+	if backupTargetFlag != "" {
+		cfg.BackupTarget = backupTargetFlag
+	}
+
+	recoveryKey := recoveryKeyFlag
+	if recoveryKey == "" {
+		recoveryKey = os.Getenv("TSM_RECOVERY_KEY")
+	}
+
 	db, err := store.New(cfg.DBPath, cfg.MasterKey, recoveryKey, logger)
 	if err != nil {
 		logger.Error("failed to init store", "err", err)
@@ -98,41 +141,81 @@ func main() {
 	}
 	defer db.Close()
 
-	// Check if we need to seed an initial admin user
-	ctx := context.Background()
-	adminCount, _ := db.CountAdmins(ctx)
-	if adminCount == 0 {
-		user := os.Getenv("TSM_ADMIN_USER")
-		if user == "" { user = "admin" }
-		
-		pass := os.Getenv("TSM_ADMIN_PASS")
-		isAutoPass := pass == ""
-		if isAutoPass { pass = generateRandomString(12) }
-
-		token := os.Getenv("TSM_ADMIN_TOKEN")
-		isAutoToken := token == ""
-		if isAutoToken { token = generateRandomString(32) }
-
-		hash, _ := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
-		db.PutAdmin(ctx, user, string(hash))
-		
-		tokenHash := sha256.Sum256([]byte(token))
-		policies := []config.Policy{{Prefix: "*", Methods: []string{"*"}}}
-		pJSON, _ := json.Marshal(policies)
-		db.PutToken(ctx, "admin", tokenHash[:], pJSON, true)
-
-		fmt.Println("\n" + `========================================================================`)
-		fmt.Println(`                        INITIAL SETUP COMPLETE                          `)
-		fmt.Println(`========================================================================`)
-		fmt.Printf("  Username: %s\n", user)
-		fmt.Printf("  Password: %s\n", pass)
-		fmt.Printf("  Admin API Token: %s\n", token)
-		fmt.Println("")
-		fmt.Println(`  [IMPORTANT] These credentials have been seeded into the database.`)
-		fmt.Println(`              This is the ONLY time the password and token will be shown.`)
-		fmt.Println(`========================================================================`)
+	if err := seedAdminUser(context.Background(), db, adminUserFlag, adminPassFlag, adminTokenFlag); err != nil {
+		logger.Error("failed to seed admin user", "err", err)
+		os.Exit(1)
 	}
 
+	if err := runServer(cfg, db, logger); err != nil {
+		logger.Error("server error", "err", err)
+		os.Exit(1)
+	}
+}
+
+func seedAdminUser(ctx context.Context, db *store.Store, adminUser, adminPass, adminToken string) error {
+	adminCount, err := db.CountAdmins(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to count admins: %w", err)
+	}
+	if adminCount > 0 {
+		return nil
+	}
+
+	user := adminUser
+	if user == "" {
+		user = os.Getenv("TSM_ADMIN_USER")
+	}
+	if user == "" {
+		user = "admin"
+	}
+
+	pass := adminPass
+	if pass == "" {
+		pass = os.Getenv("TSM_ADMIN_PASS")
+	}
+	if pass == "" {
+		pass = generateRandomString(12)
+	}
+
+	token := adminToken
+	if token == "" {
+		token = os.Getenv("TSM_ADMIN_TOKEN")
+	}
+	if token == "" {
+		token = generateRandomString(32)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if err := db.PutAdmin(ctx, user, string(hash)); err != nil {
+		return fmt.Errorf("failed to create admin: %w", err)
+	}
+
+	tokenHash := sha256.Sum256([]byte(token))
+	policies := []config.Policy{{Prefix: "*", Methods: []string{"*"}}}
+	pJSON, _ := json.Marshal(policies)
+	if err := db.PutRole(ctx, "admin", tokenHash[:], pJSON, true); err != nil {
+		return fmt.Errorf("failed to create admin role: %w", err)
+	}
+
+	fmt.Println("\n" + `========================================================================`)
+	fmt.Println(`                        INITIAL SETUP COMPLETE                          `)
+	fmt.Println(`========================================================================`)
+	fmt.Printf("  Username: %s\n", user)
+	fmt.Printf("  Password: %s\n", pass)
+	fmt.Printf("  Admin API Token: %s\n", token)
+	fmt.Println("")
+	fmt.Println(`  [IMPORTANT] These credentials have been seeded into the database.`)
+	fmt.Println(`              This is the ONLY time the password and token will be shown.`)
+	fmt.Println(`========================================================================`)
+
+	return nil
+}
+
+func runServer(cfg *config.Config, db *store.Store, logger *slog.Logger) error {
 	fmt.Print(`
   _____  _____ __  __ 
  |_   _|/ ____|  \/  |
@@ -144,6 +227,15 @@ func main() {
 
 `)
 
+	if cfg.Insecure {
+		fmt.Println("  ========================================================")
+		fmt.Println("  WARNING: Server is running in INSECURE mode.")
+		fmt.Println("           HTTPS enforcement and secure cookies are disabled.")
+		fmt.Println("           Do NOT use this mode in production!")
+		fmt.Println("  ========================================================")
+		fmt.Println()
+	}
+
 	srv := api.NewServer(db, cfg, logger)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
@@ -151,7 +243,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:         cfg.Listen,
-		Handler:      http.TimeoutHandler(mux, 15*time.Second, "request timed out"),
+		Handler:      http.TimeoutHandler(srv.SecurityMiddleware(mux), 15*time.Second, "request timed out"),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 20 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -174,7 +266,8 @@ func main() {
 	defer shutdownCancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("server forced to shutdown", "err", err)
+		return fmt.Errorf("server shutdown failed: %w", err)
 	}
 	logger.Info("shutdown complete")
+	return nil
 }

@@ -3,6 +3,8 @@ bin/
 
 # Configurations with secrets
 config.json
+*.env
+tsm.env
 
 # SQLite database files
 *.db
@@ -29,3 +31,8 @@ coverage.txt
 Thumbs.db
 
 backups
+# Generated UI files
+public/index.html
+public/assets/
+ui/react-proxy.js
+ui/react-dom-proxy.js

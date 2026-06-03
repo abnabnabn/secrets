@@ -1,6 +1,6 @@
 // Package store provides an encrypted SQLite storage backend.
-// It uses "Envelope Encryption": secrets are encrypted with an ephemeral 
-// Data Encryption Key (DEK), which is itself stored encrypted in the database 
+// It uses "Envelope Encryption": secrets are encrypted with an ephemeral
+// Data Encryption Key (DEK), which is itself stored encrypted in the database
 // using a Master Key (Primary KEK) or emergency Recovery Keys.
 package store
 
@@ -11,14 +11,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"tiny-secrets-manager/internal/crypto"
 	_ "modernc.org/sqlite"
+	"tiny-secrets-manager/internal/crypto"
 )
 
 // Store manages the database connection and encryption state.
@@ -28,15 +29,15 @@ type Store struct {
 	dek    []byte      // The raw Data Encryption Key
 }
 
-// TokenRecord represents a machine identity and its associated policies.
-type TokenRecord struct {
+// RoleRecord represents a machine identity and its associated policies.
+type RoleRecord struct {
 	Name      string          `json:"name"`
 	IsAdmin   bool            `json:"is_admin"`
 	Policies  json.RawMessage `json:"policies"`
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-// New initializes the database, ensures schema integrity, and resolves the 
+// New initializes the database, ensures schema integrity, and resolves the
 // internal Data Encryption Key (DEK) using provided credentials.
 func New(dsn string, masterKeyB64, recoveryKeyB64 string, logger *slog.Logger) (*Store, error) {
 	if !strings.Contains(dsn, "?") {
@@ -47,7 +48,7 @@ func New(dsn string, masterKeyB64, recoveryKeyB64 string, logger *slog.Logger) (
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	db.SetMaxOpenConns(16)
@@ -56,13 +57,13 @@ func New(dsn string, masterKeyB64, recoveryKeyB64 string, logger *slog.Logger) (
 
 	if err := initSchema(db); err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to init schema: %w", err)
 	}
 
 	dekBox, dek, err := resolveDEK(db, masterKeyB64, recoveryKeyB64, logger)
 	if err != nil {
 		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve DEK: %w", err)
 	}
 
 	return &Store{db: db, dekBox: dekBox, dek: dek}, nil
@@ -81,7 +82,7 @@ func initSchema(db *sql.DB) error {
 			ciphertext BLOB NOT NULL,
 			updated_at TIMESTAMP NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS tokens (
+		`CREATE TABLE IF NOT EXISTS roles (
 			name TEXT PRIMARY KEY,
 			hash BLOB NOT NULL UNIQUE,
 			policies_json TEXT NOT NULL,
@@ -110,95 +111,136 @@ func resolveDEK(db *sql.DB, masterKeyB64, recoveryKeyB64 string, logger *slog.Lo
 	var dek []byte
 
 	// 1. Decrypt via primary KEK
-	var pNonce, pWrapped []byte
-	err := db.QueryRow("SELECT nonce, wrapped_dek FROM encryption_slots WHERE slot_name = 'primary'").Scan(&pNonce, &pWrapped)
-	if err == nil && masterKeyB64 != "" {
-		primaryBox, pErr := crypto.NewBox(masterKeyB64)
-		if pErr == nil {
-			dek, _ = primaryBox.Decrypt(pNonce, pWrapped, []byte("primary"))
-		}
+	if masterKeyB64 != "" {
+		dek = decryptWithPrimaryBox(db, masterKeyB64)
 	}
 
 	// 2. Decrypt via Single-Use Recovery Keys
 	if len(dek) == 0 && recoveryKeyB64 != "" {
-		recoveryBox, rErr := crypto.NewBox(recoveryKeyB64)
-		if rErr == nil {
-			rows, qErr := db.Query("SELECT slot_name, nonce, wrapped_dek FROM encryption_slots WHERE slot_name LIKE 'backup_%'")
-			if qErr == nil {
-				defer rows.Close()
-				for rows.Next() {
-					var slotName string
-					var bNonce, bWrapped []byte
-					if err := rows.Scan(&slotName, &bNonce, &bWrapped); err == nil {
-						decrypted, dErr := recoveryBox.Decrypt(bNonce, bWrapped, []byte(slotName))
-						if dErr == nil && len(decrypted) == 32 {
-							dek = decrypted
-							db.Exec("DELETE FROM encryption_slots WHERE slot_name = ?", slotName)
-							if masterKeyB64 != "" {
-								primaryBox, pErr := crypto.NewBox(masterKeyB64)
-								if pErr == nil {
-									n, c, _ := primaryBox.Encrypt(dek, []byte("primary"))
-									db.Exec("INSERT OR REPLACE INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES ('primary', ?, ?)", n, c)
-								}
-							}
-							break
-						}
-					}
-				}
-			}
-		}
+		dek = decryptWithRecoveryKey(db, recoveryKeyB64, masterKeyB64)
 	}
 
 	// 3. Native Database Bootstrap
 	if len(dek) == 0 {
 		var count int
-		db.QueryRow("SELECT COUNT(*) FROM encryption_slots").Scan(&count)
-		if count > 0 {
+		if err := db.QueryRow("SELECT COUNT(*) FROM encryption_slots").Scan(&count); err == nil && count > 0 {
 			return nil, nil, errors.New("database locked: decryption slots exist but validation credentials failed")
 		}
 
-		if masterKeyB64 == "" {
-			return nil, nil, errors.New("master_key is required to initialize encryption slots")
-		}
-
-		dek = make([]byte, 32)
-		if _, err := rand.Read(dek); err != nil {
-			return nil, nil, err
-		}
-
-		primaryBox, err := crypto.NewBox(masterKeyB64)
+		var err error
+		dek, err = bootstrapDEK(db, masterKeyB64, logger)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("failed to bootstrap DEK: %w", err)
 		}
-		n, c, _ := primaryBox.Encrypt(dek, []byte("primary"))
-		if _, err = db.Exec("INSERT INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES ('primary', ?, ?)", n, c); err != nil {
-			return nil, nil, err
-		}
-
-		logger.Info("========================================================================")
-		logger.Info("                        EMERGENCY RECOVERY KEYS                         ")
-		logger.Info("========================================================================")
-		
-		for i := 0; i < 3; i++ {
-			bk := make([]byte, 32)
-			rand.Read(bk)
-			bkB64 := base64.StdEncoding.EncodeToString(bk)
-			
-			backupBox, _ := crypto.NewBox(bkB64)
-			slotName := "backup_" + strconv.Itoa(i)
-			bn, bc, _ := backupBox.Encrypt(dek, []byte(slotName))
-			db.Exec("INSERT INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES (?, ?, ?)", slotName, bn, bc)
-			
-			os.Stdout.WriteString("  Recovery Key " + strconv.Itoa(i) + ": " + bkB64 + "\n")
-		}
-		logger.Info("========================================================================")
 	}
 
 	box, err := crypto.NewBoxFromBytes(dek)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to create crypto box: %w", err)
 	}
 	return box, dek, nil
+}
+
+func decryptWithPrimaryBox(db *sql.DB, masterKeyB64 string) []byte {
+	var pNonce, pWrapped []byte
+	err := db.QueryRow("SELECT nonce, wrapped_dek FROM encryption_slots WHERE slot_name = 'primary'").Scan(&pNonce, &pWrapped)
+	if err != nil {
+		return nil
+	}
+
+	primaryBox, err := crypto.NewBox(masterKeyB64)
+	if err != nil {
+		return nil
+	}
+
+	dek, _ := primaryBox.Decrypt(pNonce, pWrapped, []byte("primary"))
+	return dek
+}
+
+func decryptWithRecoveryKey(db *sql.DB, recoveryKeyB64, masterKeyB64 string) []byte {
+	recoveryBox, err := crypto.NewBox(recoveryKeyB64)
+	if err != nil {
+		return nil
+	}
+
+	rows, err := db.Query("SELECT slot_name, nonce, wrapped_dek FROM encryption_slots WHERE slot_name LIKE 'backup_%'")
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var slotName string
+		var bNonce, bWrapped []byte
+		if err := rows.Scan(&slotName, &bNonce, &bWrapped); err != nil {
+			continue
+		}
+
+		decrypted, err := recoveryBox.Decrypt(bNonce, bWrapped, []byte(slotName))
+		if err == nil && len(decrypted) == 32 {
+			dek := decrypted
+
+			// Remove the used recovery key
+			db.Exec("DELETE FROM encryption_slots WHERE slot_name = ?", slotName)
+
+			// If we have a new master key, re-encrypt the DEK with it immediately
+			if masterKeyB64 != "" {
+				if primaryBox, err := crypto.NewBox(masterKeyB64); err == nil {
+					if n, c, err := primaryBox.Encrypt(dek, []byte("primary")); err == nil {
+						db.Exec("INSERT OR REPLACE INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES ('primary', ?, ?)", n, c)
+					}
+				}
+			}
+
+			return dek
+		}
+	}
+	return nil
+}
+
+func bootstrapDEK(db *sql.DB, masterKeyB64 string, logger *slog.Logger) ([]byte, error) {
+	if masterKeyB64 == "" {
+		return nil, errors.New("master_key is required to initialize encryption slots")
+	}
+
+	dek := make([]byte, 32)
+	if _, err := rand.Read(dek); err != nil {
+		return nil, err
+	}
+
+	primaryBox, err := crypto.NewBox(masterKeyB64)
+	if err != nil {
+		return nil, err
+	}
+
+	n, c, err := primaryBox.Encrypt(dek, []byte("primary"))
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = db.Exec("INSERT INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES ('primary', ?, ?)", n, c); err != nil {
+		return nil, err
+	}
+
+	logger.Info("========================================================================")
+	logger.Info("                        EMERGENCY RECOVERY KEYS                         ")
+	logger.Info("========================================================================")
+
+	for i := 0; i < 3; i++ {
+		bk := make([]byte, 32)
+		rand.Read(bk)
+		bkB64 := base64.StdEncoding.EncodeToString(bk)
+
+		backupBox, _ := crypto.NewBox(bkB64)
+		slotName := "backup_" + strconv.Itoa(i)
+		bn, bc, _ := backupBox.Encrypt(dek, []byte(slotName))
+		db.Exec("INSERT INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES (?, ?, ?)", slotName, bn, bc)
+
+		os.Stdout.WriteString("  Recovery Key " + strconv.Itoa(i) + ": " + bkB64 + "\n")
+	}
+	logger.Info("========================================================================")
+
+	return dek, nil
 }
 
 // RegenerateRecoveryKeys replaces all existing recovery key slots with a new
@@ -289,7 +331,9 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	return err
 }
 
-func escapeLike(s string) string { return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `%`, `\%`), `_`, `\_`) }
+func escapeLike(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `%`, `\%`), `_`, `\_`)
+}
 
 // List returns a sorted list of secret keys, optionally filtered by policy prefixes.
 func (s *Store) List(ctx context.Context, global bool, prefixes []string, after string, limit int) ([]string, error) {
@@ -299,8 +343,10 @@ func (s *Store) List(ctx context.Context, global bool, prefixes []string, after 
 	if !global {
 		query.WriteString("(")
 		for i, pfx := range prefixes {
-			if i > 0 { query.WriteString(" OR ") }
-			
+			if i > 0 {
+				query.WriteString(" OR ")
+			}
+
 			if pfx == "*" {
 				query.WriteString("1=1")
 			} else if strings.HasSuffix(pfx, "*") {
@@ -319,70 +365,82 @@ func (s *Store) List(ctx context.Context, global bool, prefixes []string, after 
 	args = append(args, after, after, limit)
 
 	rows, err := s.db.QueryContext(ctx, query.String(), args...)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 
 	keys := make([]string, 0, limit)
 	for rows.Next() {
 		var k string
-		if err := rows.Scan(&k); err != nil { return nil, err }
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
 		keys = append(keys, k)
 	}
 	return keys, nil
 }
 
-// PutToken stores a new hashed machine token and its policies.
-func (s *Store) PutToken(ctx context.Context, name string, hash []byte, policiesJSON []byte, isAdmin bool) error {
+// PutRole stores a new hashed machine role and its policies.
+func (s *Store) PutRole(ctx context.Context, name string, hash []byte, policiesJSON []byte, isAdmin bool) error {
 	adminFlag := 0
 	if isAdmin {
 		adminFlag = 1
 	}
-	_, err := s.db.ExecContext(ctx, "INSERT INTO tokens (name, hash, policies_json, is_admin, created_at) VALUES (?, ?, ?, ?, ?)", name, hash, string(policiesJSON), adminFlag, time.Now())
+	_, err := s.db.ExecContext(ctx, "INSERT INTO roles (name, hash, policies_json, is_admin, created_at) VALUES (?, ?, ?, ?, ?)", name, hash, string(policiesJSON), adminFlag, time.Now())
 	return err
 }
 
-// UpdateTokenPolicies updates the policy JSON for an existing token name.
-func (s *Store) UpdateTokenPolicies(ctx context.Context, name string, policiesJSON []byte) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE tokens SET policies_json = ? WHERE name = ?", string(policiesJSON), name)
+// UpdateRolePolicies updates the policy JSON for an existing role name.
+func (s *Store) UpdateRolePolicies(ctx context.Context, name string, policiesJSON []byte) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE roles SET policies_json = ? WHERE name = ?", string(policiesJSON), name)
 	return err
 }
 
-// GetTokenByHash retrieves a token record using the SHA256 hash of the token string.
-func (s *Store) GetTokenByHash(ctx context.Context, hash []byte) (*TokenRecord, error) {
-	var tr TokenRecord
+// GetRoleByHash retrieves a role record using the SHA256 hash of the role string.
+func (s *Store) GetRoleByHash(ctx context.Context, hash []byte) (*RoleRecord, error) {
+	var tr RoleRecord
 	var p string
 	var isAdmin int
-	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, created_at FROM tokens WHERE hash = ?", hash).Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt)
-	if err != nil { return nil, err }
+	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, created_at FROM roles WHERE hash = ?", hash).Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
 	tr.Policies = json.RawMessage(p)
 	tr.IsAdmin = isAdmin == 1
 	return &tr, nil
 }
 
-// GetTokenByName retrieves a token record by its unique identity name.
-func (s *Store) GetTokenByName(ctx context.Context, name string) (*TokenRecord, error) {
-	var tr TokenRecord
+// GetRoleByName retrieves a role record by its unique identity name.
+func (s *Store) GetRoleByName(ctx context.Context, name string) (*RoleRecord, error) {
+	var tr RoleRecord
 	var p string
 	var isAdmin int
-	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, created_at FROM tokens WHERE name = ?", name).Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt)
-	if err != nil { return nil, err }
+	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, created_at FROM roles WHERE name = ?", name).Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
 	tr.Policies = json.RawMessage(p)
 	tr.IsAdmin = isAdmin == 1
 	return &tr, nil
 }
 
-// ListTokens returns all registered machine tokens, sorted by name.
-func (s *Store) ListTokens(ctx context.Context) ([]TokenRecord, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, policies_json, is_admin, created_at FROM tokens ORDER BY name ASC")
-	if err != nil { return nil, err }
+// ListRoles returns all registered machine roles, sorted by name.
+func (s *Store) ListRoles(ctx context.Context) ([]RoleRecord, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT name, policies_json, is_admin, created_at FROM roles ORDER BY name ASC")
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 
-	var res []TokenRecord
+	var res []RoleRecord
 	for rows.Next() {
-		var tr TokenRecord
+		var tr RoleRecord
 		var p string
 		var isAdmin int
-		if err := rows.Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt); err != nil { return nil, err }
+		if err := rows.Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt); err != nil {
+			return nil, err
+		}
 		tr.Policies = json.RawMessage(p)
 		tr.IsAdmin = isAdmin == 1
 		res = append(res, tr)
@@ -390,9 +448,15 @@ func (s *Store) ListTokens(ctx context.Context) ([]TokenRecord, error) {
 	return res, nil
 }
 
-// DeleteToken revokes a machine token by name.
-func (s *Store) DeleteToken(ctx context.Context, name string) error {
-	_, err := s.db.ExecContext(ctx, "DELETE FROM tokens WHERE name = ?", name)
+// DeleteRole revokes a machine role by name.
+func (s *Store) DeleteRole(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, "DELETE FROM roles WHERE name = ?", name)
+	return err
+}
+
+// UpdateRoleToken updates the token hash for an existing role.
+func (s *Store) UpdateRoleToken(ctx context.Context, name string, newHash []byte) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE roles SET hash = ? WHERE name = ?", newHash, name)
 	return err
 }
 

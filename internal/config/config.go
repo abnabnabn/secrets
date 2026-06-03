@@ -19,6 +19,7 @@ type Config struct {
 	Listen       string `json:"listen"`
 	DBPath       string `json:"db_path"`
 	BackupTarget string `json:"backup_target"`
+	Insecure     bool   `json:"-"`
 }
 
 // Load initializes the configuration. It first attempts to load values from
@@ -52,6 +53,9 @@ func Load(path string) (*Config, error) {
 	}
 	if envBackupTarget := os.Getenv("TSM_BACKUP_TARGET"); envBackupTarget != "" {
 		cfg.BackupTarget = envBackupTarget
+	}
+	if envInsecure := os.Getenv("TSM_INSECURE"); envInsecure != "" {
+		cfg.Insecure = envInsecure == "true" || envInsecure == "1"
 	}
 
 	return cfg, nil

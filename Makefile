@@ -1,4 +1,4 @@
-.PHONY: all build build-server build-cli run test clean tidy setup run-env install uninstall dev-link dev-unlink
+.PHONY: all build build-server build-cli run test clean tidy setup run-env install uninstall dev-link dev-unlink lint fmt vulncheck
 
 BIN_DIR := bin
 BINARY := $(BIN_DIR)/tiny-secrets-manager
@@ -7,9 +7,9 @@ MAIN_PKG := ./cmd/tsm-server
 CLI_PKG := ./cmd/tsm-cli
 LOCAL_BIN_DIR := $(HOME)/.local/bin
 
-all: tidy build
+all: tidy fmt lint vulncheck build
 
-setup: tidy build
+setup: tidy fmt lint vulncheck build
 	@echo ""
 	@echo "========================================================================"
 	@echo "                        WORKSPACE READY                                 "
@@ -23,12 +23,10 @@ setup: tidy build
 build: build-server build-cli
 
 build-server:
-	@echo "Building Tiny Secrets Manager server binary (with minification)..."
+	@echo "Building Tiny Secrets Manager server binary..."
 	@mkdir -p $(BIN_DIR)
-	@cp public/index.html public/index.html.bak
-	@go run cmd/prebuild/main.go public/index.html public/index.html
+	@go run cmd/prebuild/main.go
 	@go build -ldflags="-s -w" -trimpath -o $(BINARY) $(MAIN_PKG)
-	@mv public/index.html.bak public/index.html
 
 build-cli:
 	@echo "Building Tiny Secrets Manager CLI binary..."
@@ -50,17 +48,37 @@ run-env: build-server
 	$(BINARY)
 
 test:
-	@echo "Running tests..."
-	go test -v -race ./...
+	@echo "Running tests with coverage and summary..."
+	go run gotest.tools/gotestsum@latest --format pkgname -- -race -coverprofile=coverage.out ./...
+	@echo ""
+	@echo "========================================================================"
+	@echo "                        COVERAGE SUMMARY                                "
+	@echo "========================================================================"
+	@go tool cover -func=coverage.out
 
 clean:
 	@echo "Cleaning up..."
 	@rm -rf $(BIN_DIR)
+	@rm -rf public/assets
+	@rm -f public/index.html
 	@rm -f *.db *.db-shm *.db-wal
 
 tidy:
 	@echo "Tidying go modules..."
 	go mod tidy
+
+fmt:
+	@echo "Formatting code..."
+	go fmt ./...
+
+lint:
+	@echo "Linting code..."
+	go vet ./...
+	go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run
+
+vulncheck:
+	@echo "Running vulnerability check..."
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 install: build
 	@echo "Installing binaries to $(PREFIX)/bin..."

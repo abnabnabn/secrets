@@ -1,0 +1,310 @@
+openapi: 3.0.3
+info:
+  title: Tiny Secrets Manager API
+  description: A lightweight, secure, and self-hosted secrets manager.
+  version: 1.0.0
+servers:
+  - url: /v1
+    description: Current API Version
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Token
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: tsm_admin
+
+  schemas:
+    Policy:
+      type: object
+      properties:
+        prefix:
+          type: string
+          description: "Prefix path or exact key. Use '*' for all."
+          example: "app.prod.*"
+        methods:
+          type: array
+          items:
+            type: string
+            enum: [GET, PUT, DELETE, LIST, "*"]
+          description: "Allowed HTTP methods for this prefix."
+
+    Client:
+      type: object
+      properties:
+        name:
+          type: string
+        is_admin:
+          type: boolean
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+
+    RoleRecord:
+      type: object
+      properties:
+        name:
+          type: string
+        is_admin:
+          type: boolean
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/Policy'
+        created_at:
+          type: string
+          format: date-time
+
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+
+paths:
+  /auth/login:
+    post:
+      summary: Login to Admin Session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '204':
+          description: Successful login, sets `tsm_admin` cookie.
+        '401':
+          description: Unauthorized
+
+  /auth/logout:
+    post:
+      summary: Logout Admin Session
+      responses:
+        '204':
+          description: Clears `tsm_admin` cookie.
+
+  /auth/me:
+    get:
+      summary: Get Current Identity
+      responses:
+        '200':
+          description: Returns the current authenticated client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+
+  /secrets:
+    get:
+      summary: List Secrets
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 1000
+        - in: query
+          name: after
+          schema:
+            type: string
+            description: "Pagination cursor (last seen key)"
+      responses:
+        '200':
+          description: List of secret keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /secrets/{key}:
+    get:
+      summary: Get Secret Value
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Returns the secret value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                  value:
+                    type: string
+                  env_key:
+                    type: string
+                    description: Optional environment variable name
+        '404':
+          description: Secret not found
+    
+    put:
+      summary: Put Secret Value
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: string
+                env_key:
+                  type: string
+                  description: Optional environment variable name
+      responses:
+        '204':
+          description: Secret created or updated successfully
+
+    delete:
+      summary: Delete Secret
+      parameters:
+        - in: path
+          name: key
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Secret deleted successfully
+
+  /roles:
+    get:
+      summary: List Roles
+      description: Requires Admin privileges.
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RoleRecord'
+
+    post:
+      summary: Create Role
+      description: Requires Admin privileges.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Unique name for the role
+                policies:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Policy'
+      responses:
+        '200':
+          description: Returns the raw token string (only shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+
+  /roles/{name}:
+    put:
+      summary: Update Role Policies
+      description: Requires Admin privileges.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                policies:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Policy'
+      responses:
+        '204':
+          description: Role policies updated successfully
+
+    delete:
+      summary: Delete Role
+      description: Requires Admin privileges.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Role deleted successfully
+
+  /roles/{name}/regenerate:
+    post:
+      summary: Regenerate Role Token
+      description: Requires Admin privileges. Immediately invalidates the old token and generates a new one.
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Returns the raw token string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+
+  /recovery-keys/regenerate:
+    post:
+      summary: Regenerate Emergency Recovery Keys
+      description: Requires Admin privileges. Invalidates old keys and returns 3 new single-use recovery keys.
+      responses:
+        '200':
+          description: Returns the new recovery keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recovery_keys:
+                    type: array
+                    items:
+                      type: string

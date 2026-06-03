@@ -1,5 +1,5 @@
 // Package crypto provides a simplified interface for XChaCha20-Poly1305 encryption.
-// XChaCha20-Poly1305 is used for its large 192-bit nonce, making it safe for 
+// XChaCha20-Poly1305 is used for its large 192-bit nonce, making it safe for
 // random nonce generation without risk of collisions.
 package crypto
 
@@ -38,19 +38,19 @@ func NewBoxFromBytes(key []byte) (*Box, error) {
 	return &Box{aead: a}, nil
 }
 
-// Encrypt generates a random nonce and encrypts the plaintext with optional 
+// Encrypt generates a random nonce and encrypts the plaintext with optional
 // Authenticated Additional Data (AAD). It returns the nonce and ciphertext.
-func (c *Box) Encrypt(plaintext, AAD []byte) (nonce []byte, ciphertext []byte, err error) {
-	nonce = make([]byte, c.aead.NonceSize())
+func (b *Box) Encrypt(plaintext, AAD []byte) (nonce []byte, ciphertext []byte, err error) {
+	nonce = make([]byte, b.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, nil, err
 	}
-	ciphertext = c.aead.Seal(nil, nonce, plaintext, AAD)
+	ciphertext = b.aead.Seal(nil, nonce, plaintext, AAD)
 	return nonce, ciphertext, nil
 }
 
 // Decrypt verifies the authenticity of the ciphertext using the nonce and AAD,
 // then returns the original plaintext.
-func (c *Box) Decrypt(nonce, ciphertext, AAD []byte) ([]byte, error) {
-	return c.aead.Open(nil, nonce, ciphertext, AAD)
+func (b *Box) Decrypt(nonce, ciphertext, AAD []byte) ([]byte, error) {
+	return b.aead.Open(nil, nonce, ciphertext, AAD)
 }

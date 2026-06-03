@@ -365,7 +365,9 @@ func (c *TSMCLI) getSecret(cfg *Config, token, key string) error {
 	if err != nil {
 		return err
 	}
-	var res struct{ Value string `json:"value"` }
+	var res struct {
+		Value string `json:"value"`
+	}
 	if err := json.Unmarshal(data, &res); err != nil {
 		return fmt.Errorf("failed to parse server response: %w", err)
 	}
@@ -415,8 +417,9 @@ func (c *TSMCLI) deleteSecret(cfg *Config, token, key string) error {
 	return nil
 }
 
-func parseEnvFile(content string) map[string]string {
-	res := make(map[string]string)
+func parseEnvFile(content string) (map[string]string, []string) {
+	explicit := make(map[string]string)
+	var implicit []string
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -425,10 +428,12 @@ func parseEnvFile(content string) map[string]string {
 		}
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
-			res[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+			explicit[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		} else {
+			implicit = append(implicit, strings.TrimSpace(parts[0]))
 		}
 	}
-	return res
+	return explicit, implicit
 }
 
 func (c *TSMCLI) handleRunCommand(cfg *Config, activeToken string, args []string) error {
@@ -484,13 +489,32 @@ func (c *TSMCLI) runWithEnvironment(cfg *Config, token, tsmEnvPath, dotEnvPath s
 
 	// 1. TSM Mappings (Pointers)
 	if b, err := os.ReadFile(tsmEnvPath); err == nil {
-		mappings := parseEnvFile(string(b))
+		mappings, implicit := parseEnvFile(string(b))
 		for envKey, secretKey := range mappings {
 			data, err := c.apiRequest(token, "GET", "secrets/"+secretKey, nil)
 			if err == nil {
-				var res struct{ Value string `json:"value"` }
+				var res struct {
+					Value string `json:"value"`
+				}
 				if err := json.Unmarshal(data, &res); err == nil {
 					envMap[envKey] = res.Value
+				}
+			}
+		}
+
+		for _, secretKey := range implicit {
+			data, err := c.apiRequest(token, "GET", "secrets/"+secretKey, nil)
+			if err == nil {
+				var res struct {
+					Value  string `json:"value"`
+					EnvKey string `json:"env_key"`
+				}
+				if err := json.Unmarshal(data, &res); err == nil {
+					if res.EnvKey != "" {
+						envMap[res.EnvKey] = res.Value
+					} else {
+						fmt.Fprintf(os.Stderr, "Warning: implicit secret '%s' has no env_key configured, skipping\n", secretKey)
+					}
 				}
 			}
 		}
@@ -498,7 +522,7 @@ func (c *TSMCLI) runWithEnvironment(cfg *Config, token, tsmEnvPath, dotEnvPath s
 
 	// 2. Standard .env (Literals) - Local priority
 	if b, err := os.ReadFile(dotEnvPath); err == nil {
-		literals := parseEnvFile(string(b))
+		literals, _ := parseEnvFile(string(b))
 		for k, v := range literals {
 			envMap[k] = v
 		}
