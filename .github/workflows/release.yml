@@ -1,0 +1,77 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            suffix: ""
+            cmd: tar -czf
+            ext: .tar.gz
+          - os: linux
+            arch: arm64
+            suffix: ""
+            cmd: tar -czf
+            ext: .tar.gz
+          - os: darwin
+            arch: amd64
+            suffix: ""
+            cmd: tar -czf
+            ext: .tar.gz
+          - os: darwin
+            arch: arm64
+            suffix: ""
+            cmd: tar -czf
+            ext: .tar.gz
+          - os: windows
+            arch: amd64
+            suffix: ".exe"
+            cmd: zip -qj
+            ext: .zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build CLI Binary
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          BINARY_NAME=tsm${{ matrix.suffix }}
+          PACKAGE_NAME=tsm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          
+          # Build optimized, statically linked binary
+          go build -ldflags="-s -w" -trimpath -o bin/$BINARY_NAME ./cmd/tsm-cli/main.go
+          
+          # Package the binary
+          cd bin
+          ${{ matrix.cmd }} ../$PACKAGE_NAME $BINARY_NAME
+          cd ..
+          
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.PACKAGE_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
