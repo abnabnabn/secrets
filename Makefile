@@ -134,6 +134,13 @@ install:
 			sudo -u tsm env TSM_ADMIN_PASS="$$TSM_ADMIN_PASS" TSM_ADMIN_USER="$$TSM_ADMIN_USER" TSM_BACKUP_TARGET="$$TSM_BACKUP_TARGET" sh -c "cd /var/lib/tiny-secrets-manager && $(PREFIX)/bin/tiny-secrets-manager -seed-only /etc/tiny-secrets-manager/config.json"; \
 		fi; \
 		cp scripts/tiny-secrets-manager.service /etc/systemd/system/tiny-secrets-manager.service; \
+		if [ -n "$$TSM_LISTEN" ] || [ -n "$$TSM_INSECURE" ]; then \
+			echo "Configuring systemd environment overrides..."; \
+			mkdir -p /etc/systemd/system/tiny-secrets-manager.service.d; \
+			echo "[Service]" > /etc/systemd/system/tiny-secrets-manager.service.d/override.conf; \
+			if [ -n "$$TSM_LISTEN" ]; then echo "Environment=\"TSM_LISTEN=$$TSM_LISTEN\"" >> /etc/systemd/system/tiny-secrets-manager.service.d/override.conf; fi; \
+			if [ -n "$$TSM_INSECURE" ]; then echo "Environment=\"TSM_INSECURE=$$TSM_INSECURE\"" >> /etc/systemd/system/tiny-secrets-manager.service.d/override.conf; fi; \
+		fi; \
 		systemctl daemon-reload; \
 		if systemctl is-active --quiet tiny-secrets-manager; then \
 			systemctl restart tiny-secrets-manager; \
@@ -155,6 +162,7 @@ uninstall:
 			systemctl disable tiny-secrets-manager; \
 		fi; \
 		rm -f /etc/systemd/system/tiny-secrets-manager.service; \
+		rm -rf /etc/systemd/system/tiny-secrets-manager.service.d; \
 		systemctl daemon-reload; \
 		rm -rf /etc/tiny-secrets-manager /var/lib/tiny-secrets-manager; \
 		if id tsm >/dev/null 2>&1; then \

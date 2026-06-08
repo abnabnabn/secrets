@@ -109,10 +109,12 @@ sudo make install # (Copies to /usr/local/bin)
 > **Systemd Auto-Setup (Linux)**
 > If you run `sudo make install` on a Linux system with `systemctl`, the Makefile will automatically set up the server as a background service following security best practices. It creates a dedicated `tsm` system user, provisions `/etc/tiny-secrets-manager` for configuration, `/var/lib/tiny-secrets-manager` for the database, and installs a systemd service. 
 > 
-> You can pass `TSM_ADMIN_USER=... TSM_ADMIN_PASS=... TSM_BACKUP_TARGET=... sudo make install` to automatically provision the admin credentials and backup settings directly into the encrypted vault during installation.
-> To pre-seed custom admin credentials without leaving plaintext files on your filesystem, you can inject them directly during installation:
-> `sudo TSM_ADMIN_PASS=MyCustomPassword make install`
-> (The installer will securely seed the database and discard the variables before the daemon ever starts).
+> **Bootstrap Variables:**
+> You can pass `TSM_ADMIN_USER=... TSM_ADMIN_PASS=... TSM_BACKUP_TARGET=... sudo make install` to automatically provision the admin credentials and backup settings directly into the encrypted vault during installation. The installer securely seeds the database and discards the variables before the daemon ever starts.
+> 
+> **Runtime Variables:**
+> You can also pass `TSM_LISTEN="0.0.0.0:80" TSM_INSECURE=true sudo make install`. The Makefile will automatically create a systemd drop-in override (`/etc/systemd/system/tiny-secrets-manager.service.d/override.conf`) to bind these runtime variables to the service!
+> 
 > To enable and start it manually: `sudo systemctl enable --now tiny-secrets-manager`
 
 - To use the CLI on **other machines**, you will need to manually copy the generated `tsm` binary from your `bin/` directory to those machines.  If you're building from source then you shouldn't need help here!

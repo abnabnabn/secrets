@@ -59,7 +59,7 @@ func bootstrap(logger *slog.Logger, configPath string) (*config.Config, error) {
 	}
 
 	logger.Info("infrastructure configuration generated", "path", configPath)
-	return cfg, nil
+	return config.Load(configPath)
 }
 
 func main() {

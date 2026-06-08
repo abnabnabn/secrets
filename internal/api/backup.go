@@ -19,6 +19,8 @@ func (s *Server) backupLoop() {
 	// Initial wait to let server start up
 	time.Sleep(5 * time.Second)
 
+	lastRetentionRun := time.Now()
+
 	for {
 		intervalMins := 5 // default
 		val, err := s.store.GetSetting(context.Background(), "backup_interval_mins")
@@ -37,6 +39,16 @@ func (s *Server) backupLoop() {
 			} else {
 				s.backupNeeded.Store(false)
 			}
+			lastRetentionRun = time.Now()
+		} else if time.Since(lastRetentionRun) >= 1*time.Hour {
+			// Run retention policy periodically even if no backups were created
+			if target, err := s.store.GetSetting(context.Background(), "backup_target"); err == nil && target != "" {
+				isRemote := strings.Contains(target, "@") && strings.Contains(target, ":")
+				if !isRemote {
+					s.applyRetentionPolicy(target, false)
+				}
+			}
+			lastRetentionRun = time.Now()
 		}
 	}
 }
