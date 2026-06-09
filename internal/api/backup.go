@@ -91,7 +91,7 @@ func (s *Server) runBackup() error {
 	}
 
 	if !isRemote {
-		if err := os.MkdirAll(filepath.Dir(finalTarget), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(finalTarget), 0750); err != nil {
 			return fmt.Errorf("failed to create backup directory: %w", err)
 		}
 		tmpFile := finalTarget + ".tmp"
@@ -111,6 +111,7 @@ func (s *Server) runBackup() error {
 			return fmt.Errorf("remote backup vacuum failed: %w", err)
 		}
 
+		// #nosec G204 - The server explicitly executes SCP to perform the remote backup transfer
 		cmd := exec.CommandContext(ctx, "scp", "-o", "StrictHostKeyChecking=no", tmpFile, finalTarget)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("scp backup failed: %w (output: %s)", err, string(out))

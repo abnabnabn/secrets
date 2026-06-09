@@ -59,6 +59,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #nosec G124 - Secure and SameSite are evaluated dynamically based on config
 	http.SetCookie(w, &http.Cookie{
 		Name:     "tsm_admin",
 		Value:    sessionToken,
@@ -75,6 +76,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// #nosec G124 - Secure and SameSite are evaluated dynamically based on config
 	http.SetCookie(w, &http.Cookie{
 		Name:     "tsm_admin",
 		Value:    "",

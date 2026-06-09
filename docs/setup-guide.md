@@ -24,9 +24,21 @@ Tiny Secrets Manager is designed to be zero-configuration on first boot. The eas
 If you prefer running the raw server binary directly on your host machine without Docker, you can download the latest pre-compiled release from GitHub using our universal installation script.
 1. Run the script to install the server:
    ```bash
-   curl -sSL https://raw.githubusercontent.com/abnabnabn/tiny-secrets-manager/main/scripts/install.sh | bash -s -- --server --backup-target /var/backups/tsm/
+   curl -sSL https://raw.githubusercontent.com/abnabnabn/tiny-secrets-manager/main/scripts/install.sh | bash -s -- --server
    ```
-   *(The default install location is /usr/local/bin. You can also pass `--dest <install-path>` to install it somewhere else, eg `--dest ~/.local/bin`. The `--backup-target` flag is optional but recommended to set up automated backups on boot).*
+   *(The default install location is `/usr/local/bin`. You can also pass `--dest <install-path>` to install it somewhere else, eg `--dest ~/.local/bin`).*
+
+   > [!TIP]
+   > **Systemd Auto-Setup (Linux)**
+   > If you append the `--systemd` flag (and run with `sudo`), the script will automatically set up the server as a background service following security best practices!
+   > You can securely provision the database and configure the systemd service by passing configuration flags or `TSM_` environment variables:
+   > ```bash
+   > curl -sSL https://raw.../install.sh | sudo bash -s -- --server --systemd \
+   >   --listen 0.0.0.0:80 \
+   >   --admin-user myadmin \
+   >   --admin-pass supersecret \
+   >   --backup-target /var/backups/tsm/
+   > ```
 2. Run the server:
    ```bash
    tiny-secrets-manager
@@ -84,14 +96,14 @@ To use the CLI, you must install it on the machine that needs it. There are thre
 When running the server via Docker, the container hosts all the pre-compiled CLI binaries on its own internal file server. You can install it on your client machines directly from the server:
 ```bash
 # Replace localhost:8090 with your actual server URL if running remotely
-curl -sSL http://localhost:8090/install.sh | bash -s http://localhost:8090
+curl -sSL http://localhost:8090/install.sh | bash -s -- --cli --url http://localhost:8090
 ```
 *(This script automatically detects your OS and processor architecture to fetch the perfectly matched binary).*
 
 ### Option B: From GitHub Releases
 If you aren't using Docker and just want the pre-compiled binary, you can download it directly from GitHub using our universal installation script.  It would have already been installed for you in step 1, but if you need it on another computer you can install as follows:
 ```bash
-curl -sSL https://raw.githubusercontent.com/abnabnabn/tiny-secrets-manager/main/scripts/install.sh | bash -s -- --cli
+curl -sSL https://raw.githubusercontent.com/abnabnabn/tiny-secrets-manager/main/scripts/install.sh | bash -s -- --cli --url http://localhost:8090
 ```
 
 ### Option C: If you built from Source
@@ -107,7 +119,7 @@ sudo make install # (Copies to /usr/local/bin)
 ```
 > [!TIP]
 > **Systemd Auto-Setup (Linux)**
-> If you run `sudo make install` on a Linux system with `systemctl`, the Makefile will automatically set up the server as a background service following security best practices. It creates a dedicated `tsm` system user, provisions `/etc/tiny-secrets-manager` for configuration, `/var/lib/tiny-secrets-manager` for the database, and installs a systemd service. 
+> Just like the `install.sh --systemd` script, if you run `sudo make install` on a Linux system with `systemctl`, the Makefile will automatically set up the server as a background service following security best practices. It creates a dedicated `tsm` system user, provisions `/etc/tiny-secrets-manager` for configuration, `/var/lib/tiny-secrets-manager` for the database, and installs a systemd service. 
 > 
 > **Bootstrap Variables:**
 > You can pass `TSM_ADMIN_USER=... TSM_ADMIN_PASS=... TSM_BACKUP_TARGET=... sudo make install` to automatically provision the admin credentials and backup settings directly into the encrypted vault during installation. The installer securely seeds the database and discards the variables before the daemon ever starts.

@@ -68,8 +68,8 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		os.Stdout.Write(hash)
-		os.Stdout.WriteString("\n")
+		_, _ = os.Stdout.Write(hash)
+		_, _ = os.Stdout.WriteString("\n")
 		return
 	}
 
@@ -258,6 +258,7 @@ func runServer(cfg *config.Config, db *store.Store, logger *slog.Logger) error {
 	if cliDir == "" {
 		cliDir = "./cli"
 	}
+	// #nosec G304 G703 - cliDir is configurable by the admin via environment variable
 	if stat, err := os.Stat(cliDir); err == nil && stat.IsDir() {
 		mux.Handle("/cli/", http.StripPrefix("/cli/", http.FileServer(http.Dir(cliDir))))
 	}

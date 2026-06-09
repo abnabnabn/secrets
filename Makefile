@@ -6,7 +6,8 @@ CLI_BINARY := $(BIN_DIR)/tsm
 MAIN_PKG := ./cmd/tsm-server
 CLI_PKG := ./cmd/tsm-cli
 LOCAL_BIN_DIR := $(HOME)/.local/bin
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+GIT_TAG := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+VERSION := $(patsubst v%,%,$(GIT_TAG))
 LDFLAGS := -s -w -X main.Version=$(VERSION)
 PREFIX ?= /usr/local
 
@@ -29,6 +30,7 @@ help:
 	@echo "  make tidy           - Tidy Go modules"
 	@echo "  make fmt            - Format Go code"
 	@echo "  make lint           - Run Go vet and golangci-lint"
+	@echo "  make gosec          - Run Go Security Checker (AST scan)"
 	@echo "  make vulncheck      - Run Go vulnerability check"
 	@echo "  make install        - Install binaries and systemd service (requires sudo)"
 	@echo "  make uninstall      - Remove binaries and systemd service (requires sudo)"
@@ -38,9 +40,9 @@ help:
 	@echo "  make dev-unlink     - Remove symlinks from ~/.local/bin"
 	@echo "  make install-ansible-plugin - Install the TSM Ansible lookup plugin globally for the current user"
 
-all: tidy fmt lint vulncheck build
+all: tidy fmt lint gosec vulncheck test build
 
-setup: tidy fmt lint vulncheck build
+setup: tidy fmt lint gosec vulncheck test build
 	@echo ""
 	@echo "========================================================================"
 	@echo "                        WORKSPACE READY                                 "
@@ -106,6 +108,10 @@ lint:
 	@echo "Linting code..."
 	go vet ./...
 	go run github.com/golangci/golangci-lint/cmd/golangci-lint@latest run
+
+gosec:
+	@echo "Running Go Security Checker..."
+	go run github.com/securego/gosec/v2/cmd/gosec@latest -quiet ./...
 
 vulncheck:
 	@echo "Running vulnerability check..."

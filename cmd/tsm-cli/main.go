@@ -507,6 +507,7 @@ func (c *TSMCLI) apiRequest(token, method, path string, body []byte) ([]byte, er
 		cfg.URL = envURL
 	}
 	url := fmt.Sprintf("%s/v1/%s", strings.TrimSuffix(cfg.URL, "/"), strings.TrimPrefix(path, "/"))
+	// #nosec G107 G704 - The CLI is explicitly designed to communicate with the user's configured server URL
 	req, err := http.NewRequestWithContext(context.Background(), method, url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -515,14 +516,19 @@ func (c *TSMCLI) apiRequest(token, method, path string, body []byte) ([]byte, er
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
+	// #nosec G107 G704 - The CLI is designed to communicate with the user-configured TSM server
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if srvVer := resp.Header.Get("X-TSM-Version"); srvVer != "" && srvVer != Version && Version != "dev" && srvVer != "dev" {
-		fmt.Fprintf(c.Err, "WARNING: CLI version (%s) does not match Server version (%s)\n", Version, srvVer)
+	if srvVer := resp.Header.Get("X-TSM-Version"); srvVer != "" && Version != "dev" && srvVer != "dev" {
+		normalizedSrvVer := strings.TrimPrefix(srvVer, "v")
+		normalizedCliVer := strings.TrimPrefix(Version, "v")
+		if normalizedSrvVer != normalizedCliVer {
+			fmt.Fprintf(c.Err, "WARNING: CLI version (%s) does not match Server version (%s)\n", Version, srvVer)
+		}
 	}
 
 	switch resp.StatusCode {
@@ -669,6 +675,7 @@ func (c *TSMCLI) runWithEnvironment(cfg *Config, token, tsmEnvPath, dotEnvPath s
 	}
 
 	// 1. TSM Mappings (Pointers)
+	// #nosec G304 G703 - The CLI is explicitly designed to read local .env files
 	if b, err := os.ReadFile(tsmEnvPath); err == nil {
 		mappings, implicit := parseEnvFile(string(b))
 		for envKey, secretKey := range mappings {
@@ -702,6 +709,7 @@ func (c *TSMCLI) runWithEnvironment(cfg *Config, token, tsmEnvPath, dotEnvPath s
 	}
 
 	// 2. Standard .env (Literals) - Local priority
+	// #nosec G304 G703 - The CLI is explicitly designed to read local .env files
 	if b, err := os.ReadFile(dotEnvPath); err == nil {
 		literals, _ := parseEnvFile(string(b))
 		for k, v := range literals {
@@ -717,6 +725,7 @@ func (c *TSMCLI) runWithEnvironment(cfg *Config, token, tsmEnvPath, dotEnvPath s
 		}
 	}
 
+	// #nosec G204 G702 - The CLI is specifically designed to wrap and execute arbitrary commands for the user
 	cmd := exec.Command(targetCmd[0], targetCmd[1:]...)
 	cmd.Env = make([]string, 0, len(envMap))
 	for k, v := range envMap {
@@ -895,6 +904,7 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		}
 		b, _ := json.MarshalIndent(export, "", "  ")
 		if len(args) >= 2 {
+			// #nosec G306 G703 - The CLI is explicitly instructed by the user to write an export file
 			if err := os.WriteFile(args[1], b, 0644); err != nil {
 				return err
 			}
@@ -907,6 +917,7 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		if len(args) < 2 {
 			return errors.New("usage: tsm role import <file.json>")
 		}
+		// #nosec G304 G703 - The CLI is explicitly instructed by the user to read an import file
 		b, err := os.ReadFile(args[1])
 		if err != nil {
 			return err

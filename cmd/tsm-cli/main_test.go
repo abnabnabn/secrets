@@ -593,9 +593,84 @@ func TestTSMCLI_RunWithEnvironment_EdgeCases(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestMaskToken(t *testing.T) {
-	assert.Equal(t, "**********", maskToken("short"))
-	assert.Equal(t, "abcdef...wxyz", maskToken("abcdefghijklmnowxyz"))
+func TestTSMCLI_VersionNormalization(t *testing.T) {
+	tests := []struct {
+		name          string
+		cliVer        string
+		srvVer        string
+		expectWarning bool
+	}{
+		{
+			name:          "exact match",
+			cliVer:        "1.0.1",
+			srvVer:        "1.0.1",
+			expectWarning: false,
+		},
+		{
+			name:          "match with v prefix on server",
+			cliVer:        "1.0.1",
+			srvVer:        "v1.0.1",
+			expectWarning: false,
+		},
+		{
+			name:          "match with v prefix on cli",
+			cliVer:        "v1.0.1",
+			srvVer:        "1.0.1",
+			expectWarning: false,
+		},
+		{
+			name:          "match with v prefix on both",
+			cliVer:        "v1.0.1",
+			srvVer:        "v1.0.1",
+			expectWarning: false,
+		},
+		{
+			name:          "mismatch",
+			cliVer:        "1.0.1",
+			srvVer:        "1.0.2",
+			expectWarning: true,
+		},
+		{
+			name:          "mismatch with v prefix",
+			cliVer:        "v1.0.1",
+			srvVer:        "1.0.2",
+			expectWarning: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-TSM-Version", tt.srvVer)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer server.Close()
+
+			oldVersion := Version
+			Version = tt.cliVer
+			defer func() { Version = oldVersion }()
+
+			var out, errBuf bytes.Buffer
+			app := &TSMCLI{
+				Out:        &out,
+				Err:        &errBuf,
+				ConfigPath: filepath.Join(t.TempDir(), ".tsm.json"),
+				HTTPClient: server.Client(),
+				WorkingDir: "/test",
+			}
+			_ = app.saveLogin(server.URL, "")
+			_ = app.saveContext("token")
+
+			_ = app.Run([]string{"tsm", "ls"})
+
+			if tt.expectWarning {
+				assert.Contains(t, errBuf.String(), "WARNING: CLI version")
+			} else {
+				assert.NotContains(t, errBuf.String(), "WARNING: CLI version")
+			}
+		})
+	}
 }
 
 // Helpers

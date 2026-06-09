@@ -31,6 +31,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	if path != "" {
+		// #nosec G304 - The server explicitly needs to read the configuration file specified by the user
 		b, err := os.ReadFile(path)
 		if err == nil {
 			if err := json.Unmarshal(b, cfg); err != nil {

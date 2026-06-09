@@ -57,13 +57,13 @@ func New(dsn string, masterKeyB64, recoveryKeyB64 string, logger *slog.Logger) (
 	db.SetConnMaxLifetime(time.Hour)
 
 	if err := initSchema(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to init schema: %w", err)
 	}
 
 	dekBox, dek, err := resolveDEK(db, masterKeyB64, recoveryKeyB64, logger)
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to resolve DEK: %w", err)
 	}
 
@@ -245,7 +245,7 @@ func bootstrapDEK(db *sql.DB, masterKeyB64 string, logger *slog.Logger) ([]byte,
 		bn, bc, _ := backupBox.Encrypt(dek, []byte(slotName))
 		_, _ = db.Exec("INSERT INTO encryption_slots (slot_name, nonce, wrapped_dek) VALUES (?, ?, ?)", slotName, bn, bc)
 
-		os.Stdout.WriteString("  Recovery Key " + strconv.Itoa(i) + ": " + bkB64 + "\n")
+		_, _ = os.Stdout.WriteString("  Recovery Key " + strconv.Itoa(i) + ": " + bkB64 + "\n")
 	}
 	logger.Info("========================================================================")
 

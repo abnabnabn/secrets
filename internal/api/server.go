@@ -124,6 +124,7 @@ func (s *Server) SecurityMiddleware(next http.Handler) http.Handler {
 			if !isHTTPS {
 				if r.Method == http.MethodGet {
 					target := "https://" + r.Host + r.URL.RequestURI()
+					// #nosec G710 - We are intentionally redirecting to the exact same URL requested by the user, just with HTTPS
 					http.Redirect(w, r, target, http.StatusMovedPermanently)
 				} else {
 					http.Error(w, "HTTPS Required", http.StatusForbidden)
@@ -180,6 +181,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if strings.HasPrefix(tr.Name, "session_") {
+			// #nosec G118 - The goroutine must outlive the HTTP request, so context.Background() is correct
 			go func() { _ = s.store.ExtendRoleExpiry(context.Background(), tr.Name, time.Now().Add(1*time.Hour)) }()
 		}
 

@@ -37,3 +37,6 @@ public/index.html
 public/assets/
 ui/react-proxy.js
 ui/react-dom-proxy.js
+
+local/
+

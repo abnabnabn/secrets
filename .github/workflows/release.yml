@@ -1,4 +1,4 @@
-name: Release CLI
+name: Release Binaries
 
 on:
   push:
@@ -48,30 +48,41 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version-file: 'go.mod'
           cache: true
 
-      - name: Build CLI Binary
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
+      - name: Build Binaries
         run: |
-          BINARY_NAME=tsm${{ matrix.suffix }}
-          PACKAGE_NAME=tsm-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          CLI_BINARY_NAME=tsm${{ matrix.suffix }}
+          CLI_PACKAGE_NAME=tsm-cli-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
           
-          # Build optimized, statically linked binary
-          go build -ldflags="-s -w" -trimpath -o bin/$BINARY_NAME ./cmd/tsm-cli/main.go
+          SERVER_BINARY_NAME=tiny-secrets-manager${{ matrix.suffix }}
+          SERVER_PACKAGE_NAME=tiny-secrets-manager-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
           
-          # Package the binary
+          # Get version from tag, stripping 'v' prefix
+          VERSION=${GITHUB_REF_NAME#v}
+          
+          # Run prebuild to bundle assets into server code
+          go run cmd/prebuild/main.go
+          
+          # Build optimized, statically linked binaries
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w -X main.Version=${VERSION}" -trimpath -o bin/$CLI_BINARY_NAME ./cmd/tsm-cli/main.go
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -ldflags="-s -w -X main.Version=${VERSION}" -trimpath -o bin/$SERVER_BINARY_NAME ./cmd/tsm-server/main.go
+          
+          # Package the binaries
           cd bin
-          ${{ matrix.cmd }} ../$PACKAGE_NAME $BINARY_NAME
+          ${{ matrix.cmd }} ../$CLI_PACKAGE_NAME $CLI_BINARY_NAME
+          ${{ matrix.cmd }} ../$SERVER_PACKAGE_NAME $SERVER_BINARY_NAME
           cd ..
           
-          echo "PACKAGE_NAME=$PACKAGE_NAME" >> $GITHUB_ENV
+          echo "CLI_PACKAGE_NAME=$CLI_PACKAGE_NAME" >> $GITHUB_ENV
+          echo "SERVER_PACKAGE_NAME=$SERVER_PACKAGE_NAME" >> $GITHUB_ENV
 
-      - name: Upload Release Asset
+      - name: Upload Release Assets
         uses: softprops/action-gh-release@v3
         with:
-          files: ${{ env.PACKAGE_NAME }}
+          files: |
+            ${{ env.CLI_PACKAGE_NAME }}
+            ${{ env.SERVER_PACKAGE_NAME }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

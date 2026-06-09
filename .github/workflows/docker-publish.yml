@@ -15,7 +15,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  test:
+  ci-checks:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,14 +24,23 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version-file: 'go.mod'
           cache: true
+
+      - name: Run Go vet & golangci-lint
+        run: make lint
+
+      - name: Run Go Security Checker (gosec)
+        run: make gosec
+
+      - name: Run Go Vulnerability Check
+        run: make vulncheck
 
       - name: Run tests
         run: make test
 
   build-and-push:
-    needs: test
+    needs: ci-checks
     runs-on: ubuntu-latest
     permissions:
       contents: read

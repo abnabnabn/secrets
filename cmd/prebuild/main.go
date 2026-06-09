@@ -22,7 +22,9 @@ var externalAssets = map[string]string{
 
 func main() {
 	// 1. Setup Directories
+	// #nosec G301 - Build script needs to create public readable asset directories
 	_ = os.MkdirAll("public/assets", 0755)
+	// #nosec G301 - Build script needs to create readable bin directories
 	_ = os.MkdirAll("bin", 0755)
 
 	ensureTailwind()
@@ -33,6 +35,7 @@ func main() {
 	}
 
 	// 3. Create Proxies for ESBuild to map imports to window globals
+	// #nosec G306 - Build script creates readable proxy files
 	_ = os.WriteFile("ui/react-proxy.js", []byte(`
 export default window.React;
 export const useState = window.React.useState;
@@ -43,6 +46,7 @@ export const Fragment = window.React.Fragment;
 export const createElement = window.React.createElement;
 `), 0644)
 
+	// #nosec G306 - Build script creates readable proxy files
 	_ = os.WriteFile("ui/react-dom-proxy.js", []byte(`
 export const createRoot = window.ReactDOM.createRoot;
 `), 0644)
@@ -80,6 +84,7 @@ export const createRoot = window.ReactDOM.createRoot;
 	if runtime.GOOS == "windows" {
 		twBinary += ".exe"
 	}
+	// #nosec G204 - Build script explicitly executes tailwind CLI
 	cmd := exec.Command(twBinary, "-i", "ui/style.css", "-o", "public/assets/style.css", "--minify")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -99,7 +104,17 @@ export const createRoot = window.ReactDOM.createRoot;
 	htmlStr = strings.Replace(htmlStr, "/assets/app.js", fmt.Sprintf("/assets/app.js?v=%d", timestamp), 1)
 	htmlStr = strings.Replace(htmlStr, "/assets/style.css", fmt.Sprintf("/assets/style.css?v=%d", timestamp), 1)
 
+	// #nosec G306 G703 - Build script creates readable public index
 	_ = os.WriteFile("public/index.html", []byte(htmlStr), 0644)
+
+	// 6.5 Copy unified install script to public directory
+	fmt.Println("Copying install script...")
+	if scriptData, err := os.ReadFile("scripts/install.sh"); err == nil {
+		// #nosec G306 G703 - Build script copies install.sh
+		_ = os.WriteFile("public/install.sh", scriptData, 0644)
+	} else {
+		log.Fatalf("failed to read scripts/install.sh: %v", err)
+	}
 
 	// 7. Compile CLI binaries
 	fmt.Println("Compiling CLI binaries for distribution...")
@@ -114,9 +129,11 @@ export const createRoot = window.ReactDOM.createRoot;
 	version := "dev"
 	if out, err := exec.Command("git", "describe", "--tags", "--always", "--dirty").Output(); err == nil {
 		version = strings.TrimSpace(string(out))
+		version = strings.TrimPrefix(version, "v")
 	}
 	ldflags := fmt.Sprintf("-s -w -X main.Version=%s", version)
 
+	// #nosec G301 - Build script creates readable binary directories
 	_ = os.MkdirAll("bin/cli", 0755)
 	for _, t := range targets {
 		out := filepath.Join("bin/cli", fmt.Sprintf("tsm-%s-%s", t.OS, t.Arch))
@@ -124,6 +141,7 @@ export const createRoot = window.ReactDOM.createRoot;
 			out += ".exe"
 		}
 
+		// #nosec G204 - Build script explicitly runs go build
 		cmd := exec.Command("go", "build", "-ldflags="+ldflags, "-trimpath", "-o", out, "./cmd/tsm-cli")
 		cmd.Env = append(os.Environ(), "GOOS="+t.OS, "GOARCH="+t.Arch, "CGO_ENABLED=0")
 		cmd.Stdout = os.Stdout
@@ -139,11 +157,13 @@ func downloadIfMissing(path, url string) {
 		return
 	}
 	fmt.Printf("Downloading %s...\n", filepath.Base(path))
+	// #nosec G107 - Build script is explicitly designed to download known assets
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Fatalf("download failed: %v", err)
 	}
 	defer resp.Body.Close()
+	// #nosec G304 - Build script controls the file paths being written to
 	f, _ := os.Create(path)
 	defer f.Close()
 	_, _ = io.Copy(f, resp.Body)
@@ -186,5 +206,6 @@ func ensureTailwind() {
 
 	url := fmt.Sprintf("https://github.com/tailwindlabs/tailwindcss/releases/latest/download/%s", binaryName)
 	downloadIfMissing(path, url)
+	// #nosec G302 - Build script intentionally makes the downloaded binary executable
 	_ = os.Chmod(path, 0755)
 }

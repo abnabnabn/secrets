@@ -17,6 +17,7 @@ COPY . .
 
 # Run prebuild to generate CLI binaries and web assets
 RUN go run cmd/prebuild/main.go
+RUN sed -i 's/SCRIPT_SOURCE="github"/SCRIPT_SOURCE="docker"/' public/install.sh
 
 # Create empty directories for volumes so we can copy them with correct permissions
 RUN mkdir -p /app/data /app/backups
