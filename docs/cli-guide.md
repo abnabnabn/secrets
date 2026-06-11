@@ -104,14 +104,17 @@ tsm role ls
 ```
 
 ### `tsm role create`
-Create a new role and provision its token. This command takes one or more `--policy` flags. 
-Format: `--policy <prefix>[:<methods>]` (methods default to `GET,LIST`).
+Create a new role and provision its token. This command takes one or more `--policy` flags, and an optional `--can-create` flag. 
+Format: `[--can-create] --policy <prefix>[:<methods>]` (methods default to `GET,LIST`).
 
-**Available Methods:**
+**Available Methods for Policies:**
 - `GET`: Read the value of a specific secret.
 - `LIST`: Discover secret keys under this prefix.
 - `PUT`: Create or update secrets under this prefix.
 - `DELETE`: Remove secrets under this prefix.
+
+**Global Permissions:**
+- `--can-create`: A global flag allowing the role to generate entirely new secrets (automatically granting them GET and PUT access to the new key).
 ```bash
 # Provision a token that can only read secrets starting with app.prod.
 tsm role create my-prod-server --policy app.prod.*
@@ -124,10 +127,10 @@ tsm role create my-backup-server --policy system.backup.key:GET,PUT
 ```
 
 ### `tsm role update`
-Update the policies of an existing role. This completely replaces the previous policies.
+Update the policies of an existing role. This completely replaces the previous policies and global flags.
 ```bash
-# Add a new prefix to the role
-tsm role update my-prod-server --policy app.prod.* --policy system.global.*:GET
+# Add a new prefix to the role and grant global create permissions
+tsm role update my-prod-server --can-create --policy app.prod.* --policy system.global.*:GET
 ```
 
 ### `tsm role rm`

@@ -40,6 +40,8 @@ components:
           type: string
         is_admin:
           type: boolean
+        can_create:
+          type: boolean
         policies:
           type: array
           items:
@@ -51,6 +53,8 @@ components:
         name:
           type: string
         is_admin:
+          type: boolean
+        can_create:
           type: boolean
         policies:
           type: array
@@ -226,6 +230,9 @@ paths:
                   type: array
                   items:
                     $ref: '#/components/schemas/Policy'
+                can_create:
+                  type: boolean
+                  description: Optional flag to grant global create permissions
                 expires_at:
                   type: string
                   format: date-time
@@ -263,6 +270,9 @@ paths:
                   type: array
                   items:
                     $ref: '#/components/schemas/Policy'
+                can_create:
+                  type: boolean
+                  description: Optional flag to grant global create permissions
                 expires_at:
                   type: string
                   format: date-time

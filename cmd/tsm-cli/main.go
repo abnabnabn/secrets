@@ -215,10 +215,16 @@ func (c *TSMCLI) Run(args []string) error {
 			return errors.New("usage: tsm put <key> <value> [env_key]")
 		}
 		envKey := ""
-		if len(args) >= 5 {
-			envKey = args[4]
+		grantMethods := []string{}
+		for i := 4; i < len(args); i++ {
+			if args[i] == "--grant" && i+1 < len(args) {
+				grantMethods = strings.Split(strings.ToUpper(args[i+1]), ",")
+				i++
+			} else if !strings.HasPrefix(args[i], "--") && envKey == "" {
+				envKey = args[i]
+			}
 		}
-		return c.putSecret(cfg, activeToken, args[2], args[3], envKey)
+		return c.putSecret(cfg, activeToken, args[2], args[3], envKey, grantMethods)
 	case "ls", "list":
 		prefix := ""
 		if len(args) > 2 {
@@ -247,7 +253,7 @@ func (c *TSMCLI) usage() {
 	fmt.Fprintln(c.Out, "  login [url]         - Set the server URL and/or authenticate")
 	fmt.Fprintln(c.Out, "  auth <flags>        - Manage directory/token contexts")
 	fmt.Fprintln(c.Out, "  get <key>           - Fetch and print a secret value")
-	fmt.Fprintln(c.Out, "  put <key> <value> [env]   - Store a secret value with an optional default environment variable mapping")
+	fmt.Fprintln(c.Out, "  put <key> <value> [env] [--grant methods] - Store a secret value with an optional default environment variable mapping")
 	fmt.Fprintln(c.Out, "  ls [prefix]         - List all available secret keys")
 	fmt.Fprintln(c.Out, "  rm <key>            - Permanently delete a secret")
 	fmt.Fprintln(c.Out, "  role <cmd>          - Manage roles (create, ls, rm)")
@@ -273,8 +279,8 @@ func (c *TSMCLI) roleUsage() {
 	fmt.Fprintln(c.Out, "Usage: tsm role <command> [arguments]")
 	fmt.Fprintln(c.Out, "\nCommands:")
 	fmt.Fprintln(c.Out, "  ls                                       - List all roles")
-	fmt.Fprintln(c.Out, "  create <name> --policy <prefix>[:<methods>] - Create a new role (e.g. --policy app.*:GET,LIST --policy sys.*)")
-	fmt.Fprintln(c.Out, "  update <name> --policy <prefix>[:<methods>] - Update an existing role's policies")
+	fmt.Fprintln(c.Out, "  create <name> [--can-create] --policy <prefix>[:<methods>] - Create a new role")
+	fmt.Fprintln(c.Out, "  update <name> [--can-create] --policy <prefix>[:<methods>] - Update an existing role's policies")
 	fmt.Fprintln(c.Out, "  rm <name>                                - Delete a role")
 	fmt.Fprintln(c.Out, "  export [file.json]                       - Export all roles as JSON")
 	fmt.Fprintln(c.Out, "  import <file.json>                       - Bulk create/update roles from JSON")
@@ -563,10 +569,13 @@ func (c *TSMCLI) getSecret(cfg *Config, token, key string) error {
 	return nil
 }
 
-func (c *TSMCLI) putSecret(cfg *Config, token, key, value, envKey string) error {
-	payload := map[string]string{"value": value}
+func (c *TSMCLI) putSecret(cfg *Config, token, key, value, envKey string, grantMethods []string) error {
+	payload := map[string]interface{}{"value": value}
 	if envKey != "" {
 		payload["env_key"] = envKey
+	}
+	if len(grantMethods) > 0 {
+		payload["grant_methods"] = grantMethods
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -823,6 +832,9 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 					}
 				}
 			}
+			if cc, ok := r["can_create"].(bool); ok && cc {
+				fmt.Fprintln(c.Out, "  - Global Permission: Can Create Secrets")
+			}
 		}
 		return nil
 	case "rm", "delete":
@@ -837,8 +849,18 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		return nil
 	case "create":
 		if len(args) < 2 {
-			return errors.New("usage: tsm role create <name> --policy <prefix>[:<methods>] [...]")
+			return errors.New("usage: tsm role create <name> [--can-create] --policy <prefix>[:<methods>] [...]")
 		}
+		canCreate := false
+		var cleanArgs []string
+		for _, a := range args {
+			if a == "--can-create" {
+				canCreate = true
+			} else {
+				cleanArgs = append(cleanArgs, a)
+			}
+		}
+		args = cleanArgs
 		name := args[1]
 		policies, err := parsePolicies(args)
 		if err != nil {
@@ -846,8 +868,9 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		}
 
 		reqBody := map[string]interface{}{
-			"name":     name,
-			"policies": policies,
+			"name":       name,
+			"policies":   policies,
+			"can_create": canCreate,
 		}
 		body, err := json.Marshal(reqBody)
 		if err != nil {
@@ -865,8 +888,18 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		return nil
 	case "update":
 		if len(args) < 2 {
-			return errors.New("usage: tsm role update <name> --policy <prefix>[:<methods>] [...]")
+			return errors.New("usage: tsm role update <name> [--can-create] --policy <prefix>[:<methods>] [...]")
 		}
+		canCreate := false
+		var cleanArgs []string
+		for _, a := range args {
+			if a == "--can-create" {
+				canCreate = true
+			} else {
+				cleanArgs = append(cleanArgs, a)
+			}
+		}
+		args = cleanArgs
 		name := args[1]
 		policies, err := parsePolicies(args)
 		if err != nil {
@@ -874,7 +907,8 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		}
 
 		reqBody := map[string]interface{}{
-			"policies": policies,
+			"policies":   policies,
+			"can_create": canCreate,
 		}
 		body, err := json.Marshal(reqBody)
 		if err != nil {
@@ -898,8 +932,9 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 		var export []map[string]interface{}
 		for _, r := range roles {
 			export = append(export, map[string]interface{}{
-				"name":     r["name"],
-				"policies": r["policies"],
+				"name":       r["name"],
+				"policies":   r["policies"],
+				"can_create": r["can_create"],
 			})
 		}
 		b, _ := json.MarshalIndent(export, "", "  ")
@@ -952,8 +987,10 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 				continue
 			}
 
+			canCreate, _ := r["can_create"].(bool)
+
 			if existingMap[name] {
-				reqBody := map[string]interface{}{"policies": policies}
+				reqBody := map[string]interface{}{"policies": policies, "can_create": canCreate}
 				body, _ := json.Marshal(reqBody)
 				if _, err := c.apiRequest(token, "PUT", "roles/"+name, body); err != nil {
 					fmt.Fprintf(c.Out, "Failed to update role '%s': %v\n", name, err)
@@ -961,7 +998,7 @@ func (c *TSMCLI) handleRoleCommand(cfg *Config, token string, args []string) err
 					updatedCount++
 				}
 			} else {
-				reqBody := map[string]interface{}{"name": name, "policies": policies}
+				reqBody := map[string]interface{}{"name": name, "policies": policies, "can_create": canCreate}
 				body, _ := json.Marshal(reqBody)
 				data, err := c.apiRequest(token, "POST", "roles", body)
 				if err != nil {

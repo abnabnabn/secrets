@@ -64,7 +64,7 @@ func bootstrap(logger *slog.Logger, configPath string) (*config.Config, error) {
 
 func main() {
 	if len(os.Args) >= 3 && os.Args[1] == "--hash" {
-		hash, err := bcrypt.GenerateFromPassword([]byte(os.Args[2]), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(os.Args[2]), 14)
 		if err != nil {
 			panic(err)
 		}
@@ -198,7 +198,7 @@ func seedAdminUser(ctx context.Context, db *store.Store, adminUser, adminPass, a
 		token = generateRandomString(32)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(pass), 14)
 	if err != nil {
 		return fmt.Errorf("failed to hash password: %w", err)
 	}
@@ -209,7 +209,7 @@ func seedAdminUser(ctx context.Context, db *store.Store, adminUser, adminPass, a
 
 	tokenHash := sha256.Sum256([]byte(token))
 	pJSON, _ := json.Marshal([]config.Policy{{Prefix: "*", Methods: []string{"*"}}})
-	if err := db.PutRole(ctx, "admin", tokenHash[:], pJSON, true, nil); err != nil {
+	if err := db.PutRole(ctx, "admin", tokenHash[:], pJSON, true, false, nil); err != nil {
 		return fmt.Errorf("failed to create admin role: %w", err)
 	}
 

@@ -12,7 +12,10 @@ import (
 )
 
 func (s *Server) flagBackupNeeded() {
-	s.backupNeeded.Store(true)
+	select {
+	case s.backupTrigger <- struct{}{}:
+	default:
+	}
 }
 
 func (s *Server) backupLoop() {
@@ -30,38 +33,33 @@ func (s *Server) backupLoop() {
 			}
 		}
 
-		// Wait for the interval
-		time.Sleep(time.Duration(intervalMins) * time.Minute)
+		ticker := time.NewTicker(time.Duration(intervalMins) * time.Minute)
 
-		if s.backupNeeded.Load() {
+		select {
+		case <-s.backupTrigger:
 			if err := s.runBackup(); err != nil {
 				s.logger.Error("background backup failed", "err", err)
-			} else {
-				s.backupNeeded.Store(false)
 			}
 			lastRetentionRun = time.Now()
-		} else if time.Since(lastRetentionRun) >= 1*time.Hour {
-			// Run retention policy periodically even if no backups were created
-			if target, err := s.store.GetSetting(context.Background(), "backup_target"); err == nil && target != "" {
-				isRemote := strings.Contains(target, "@") && strings.Contains(target, ":")
-				if !isRemote {
-					s.applyRetentionPolicy(target, false)
+		case <-ticker.C:
+			// Run retention policy periodically
+			if time.Since(lastRetentionRun) >= 1*time.Hour {
+				if target, err := s.store.GetSetting(context.Background(), "backup_target"); err == nil && target != "" {
+					isRemote := strings.Contains(target, "@") && strings.Contains(target, ":")
+					if !isRemote {
+						s.applyRetentionPolicy(target, false)
+					}
 				}
+				lastRetentionRun = time.Now()
 			}
-			lastRetentionRun = time.Now()
 		}
+		ticker.Stop()
 	}
 }
 
 func (s *Server) runBackup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-
-	// Ensure we only run one backup at a time
-	if !s.backupMutex.TryLock() {
-		return fmt.Errorf("backup already in progress")
-	}
-	defer s.backupMutex.Unlock()
 
 	target, err := s.store.GetSetting(ctx, "backup_target")
 	if err != nil || target == "" {

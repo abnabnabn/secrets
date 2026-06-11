@@ -8,7 +8,7 @@ import (
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	client := r.Context().Value(clientCtxKey).(Client)
 	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		s.respondError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
@@ -16,32 +16,31 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.store.GetAllSettings(ctx)
 	if err != nil {
 		s.logger.Error("failed to get settings", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.respondError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(settings)
+	s.respondJSON(w, http.StatusOK, settings)
 }
 
 func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	client := r.Context().Value(clientCtxKey).(Client)
 	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		s.respondError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
 	var req map[string]string
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
+		s.respondError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
 	ctx := r.Context()
 	for k, v := range req {
 		if err := s.store.PutSetting(ctx, k, v); err != nil {
-			s.logger.Error("failed to update setting", "key", k, "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			s.logger.Error("failed to update setting", "err", err)
+			s.respondError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 	}
@@ -52,13 +51,13 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTriggerBackup(w http.ResponseWriter, r *http.Request) {
 	client := r.Context().Value(clientCtxKey).(Client)
 	if !client.IsAdmin {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		s.respondError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 
 	if err := s.runBackup(); err != nil {
 		s.logger.Error("manual backup failed", "err", err)
-		http.Error(w, "backup failed: "+err.Error(), http.StatusInternalServerError)
+		s.respondError(w, http.StatusInternalServerError, "backup failed: "+err.Error())
 		return
 	}
 

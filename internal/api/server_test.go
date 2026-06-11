@@ -38,7 +38,7 @@ func setupTestServer(t *testing.T) (*Server, *store.Store, *http.ServeMux, strin
 	adminToken := "test-admin-token"
 	tokenHash := sha256.Sum256([]byte(adminToken))
 	pJSON, _ := json.Marshal([]config.Policy{{Prefix: "*", Methods: []string{"*"}}})
-	if err := db.PutRole(context.Background(), "admin", tokenHash[:], pJSON, true, nil); err != nil {
+	if err := db.PutRole(context.Background(), "admin", tokenHash[:], pJSON, true, false, nil); err != nil {
 		t.Fatalf("failed to insert mock admin token: %v", err)
 	}
 

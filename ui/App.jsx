@@ -198,6 +198,7 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
     const [readSecret, setReadSecret] = useState(null);
     const [isAdding, setIsAdding] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
+    const [originalKey, setOriginalKey] = useState('');
     const [newKey, setNewKey] = useState('');
     const [newValue, setNewValue] = useState('');
     const [newEnvKey, setNewEnvKey] = useState('');
@@ -205,6 +206,43 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
     const [importText, setImportText] = useState('');
     const [importAnalysis, setImportAnalysis] = useState(null);
     const [isImportProcessing, setIsImportProcessing] = useState(false);
+    const [resolvedPreview, setResolvedPreview] = useState('');
+    const [originalValue, setOriginalValue] = useState('');
+    const [originalEnvKey, setOriginalEnvKey] = useState('');
+    const [autoPopulateEnv, setAutoPopulateEnv] = useState(true);
+
+    useEffect(() => {
+        if (identity.is_admin) {
+            fetch(`${API_BASE}/v1/system/settings`, fetchConfig)
+                .then(res => res.ok ? res.json() : null)
+                .then(data => {
+                    if (data && data.auto_populate_env_name === 'false') {
+                        setAutoPopulateEnv(false);
+                    }
+                })
+                .catch(e => console.error('Failed to fetch settings', e));
+        }
+    }, [identity.is_admin]);
+
+    const checkUnsavedChanges = () => {
+        if (!isAdding && !isEditing) return true;
+        const hasChanges = newKey !== originalKey || newValue !== originalValue || newEnvKey !== originalEnvKey;
+        if (hasChanges) {
+            return confirm("You have unsaved changes. Are you sure you want to discard them?");
+        }
+        return true;
+    };
+
+    const handleKeyChange = (e) => {
+        const val = e.target.value;
+        setNewKey(val);
+        if (autoPopulateEnv) {
+            const prevAutoEnv = newKey.replace(/\./g, '_').toUpperCase();
+            if (!newEnvKey || newEnvKey === prevAutoEnv) {
+                setNewEnvKey(val.replace(/\./g, '_').toUpperCase());
+            }
+        }
+    };
 
     const getHeaders = useCallback(() => {
         const headers = { 'Content-Type': 'application/json' };
@@ -218,6 +256,30 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
     }, []);
 
     useEffect(() => { fetchSecrets(); }, [fetchSecrets]);
+
+    useEffect(() => {
+        if (!newValue || !newValue.includes('${')) {
+            setResolvedPreview('');
+            return;
+        }
+        const timer = setTimeout(async () => {
+            try {
+                const res = await fetch(`${API_BASE}/v1/secrets/resolve`, {
+                    ...fetchConfig,
+                    method: 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify({ value: newValue })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setResolvedPreview(data.value);
+                }
+            } catch (e) {
+                console.error('Resolution failed', e);
+            }
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [newValue, getHeaders]);
 
     const selectedRole = useMemo(() => roles.find(t => t.name === filterRoleName), [filterRoleName, roles]);
 
@@ -276,9 +338,16 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
     }, [secrets, selectedRole]);
 
     const handleGet = async (key) => {
+        if (!checkUnsavedChanges()) return;
         const res = await fetch(`${API_BASE}/v1/secrets/${key}`, { ...fetchConfig, headers: getHeaders() });
-        if (res.ok) setReadSecret(await res.json());
-        else if (res.status === 403) alert('Permission Denied by Backend');
+        if (res.ok) {
+            setReadSecret(await res.json());
+            setIsAdding(false);
+            setIsEditing(false);
+            setIsImporting(false);
+        } else if (res.status === 403) {
+            alert('Permission Denied by Backend');
+        }
     };
 
     const handlePut = async (e) => {
@@ -290,11 +359,25 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
             body: JSON.stringify({ value: newValue, env_key: newEnvKey })
         });
         if (res.ok) {
+            if (isEditing && originalKey && originalKey !== newKey) {
+                try {
+                    await fetch(`${API_BASE}/v1/secrets/${originalKey}`, {
+                        ...fetchConfig,
+                        method: 'DELETE',
+                        headers: getHeaders()
+                    });
+                } catch (err) {
+                    console.error('Failed to delete old key on rename', err);
+                }
+            }
             setIsAdding(false);
             setIsEditing(false);
+            setOriginalKey('');
             setNewKey('');
             setNewValue('');
+            setOriginalValue('');
             setNewEnvKey('');
+            setOriginalEnvKey('');
             fetchSecrets();
         } else if (res.status === 403) {
             alert('Permission Denied by Backend');
@@ -354,9 +437,13 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
     };
 
     const handleEdit = (key) => {
+        if (!checkUnsavedChanges()) return;
         setNewKey(key);
+        setOriginalKey(key);
         setNewValue('Loading...'); // UI hint
+        setOriginalValue('Loading...');
         setNewEnvKey('');
+        setOriginalEnvKey('');
         setIsEditing(true);
         setIsAdding(false);
         fetch(`${API_BASE}/v1/secrets/${key}`, { ...fetchConfig, headers: getHeaders() })
@@ -365,8 +452,10 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
                 throw new Error('Forbidden');
             })
             .then(data => {
-                setNewValue(data.value);
+                setNewValue(data.raw_value || data.value);
+                setOriginalValue(data.raw_value || data.value);
                 setNewEnvKey(data.env_key || '');
+                setOriginalEnvKey(data.env_key || '');
             })
             .catch(() => {
                 alert('Permission Denied by Backend');
@@ -375,13 +464,18 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
     };
 
     const startAdd = () => {
+        if (!checkUnsavedChanges()) return;
         setNewKey('');
+        setOriginalKey('');
         setNewValue('');
+        setOriginalValue('');
         setNewEnvKey('');
+        setOriginalEnvKey('');
         setIsAdding(true);
         setIsEditing(false);
         setIsImporting(false);
         setImportAnalysis(null);
+        setResolvedPreview('');
     };
 
     const handleParseImport = async () => {
@@ -488,6 +582,7 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
 
     const canPutAnything = useMemo(() => {
         if (!selectedRole) return true;
+        if (selectedRole.can_create) return true;
         return selectedRole.policies.some(p => p.methods.includes('PUT') || p.methods.includes('*'));
     }, [selectedRole]);
 
@@ -501,6 +596,7 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
                             <React.Fragment>
                                 <button 
                                     onClick={() => {
+                                        if (!checkUnsavedChanges()) return;
                                         setIsImporting(true);
                                         setImportText('');
                                         setImportAnalysis(null);
@@ -633,7 +729,7 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
                             <div className="space-y-4">
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1">Key Path (dots are allowed)</label>
-                                    <input type="text" required value={newKey} onChange={e => setNewKey(e.target.value)} disabled={isEditing} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white font-mono text-sm disabled:opacity-50 focus:border-blue-500 outline-none" placeholder="e.g. app.database.password" />
+                                    <input type="text" required value={newKey} onChange={handleKeyChange} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white font-mono text-sm focus:border-blue-500 outline-none" placeholder="e.g. app.database.password" />
                                 </div>
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1">Environment Variable Key (Optional)</label>
@@ -643,6 +739,12 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
                                     <label className="block text-xs text-gray-400 mb-1">Value</label>
                                     <textarea required value={newValue} onChange={e => setNewValue(e.target.value)} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white font-mono h-48 text-sm focus:border-blue-500 outline-none" />
                                 </div>
+                                {resolvedPreview && resolvedPreview !== newValue && (
+                                    <div>
+                                        <label className="block text-xs text-gray-400 mb-1">Resolved Value</label>
+                                        <pre className="w-full bg-gray-800 border border-gray-600 rounded p-2 text-blue-300 font-mono min-h-[2.5rem] whitespace-pre-wrap text-sm">{resolvedPreview}</pre>
+                                    </div>
+                                )}
                                 <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white font-semibold p-2 rounded transition">Save Secret</button>
                             </div>
                         </form>
@@ -740,7 +842,13 @@ function SecretsManager({ identity, roles, filterRoleName, setFilterRoleName, re
                                 {readSecret.key}
                                 {readSecret.env_key && <span className="ml-2 text-purple-400">({readSecret.env_key})</span>}
                             </div>
-                            <pre className="bg-black p-4 rounded border border-gray-700 whitespace-pre-wrap font-mono text-green-400 text-sm shadow-inner">{readSecret.value}</pre>
+                            <pre className="bg-black p-4 rounded border border-gray-700 whitespace-pre-wrap font-mono text-green-400 text-sm shadow-inner">{(readSecret.raw_value && readSecret.raw_value !== readSecret.value) ? readSecret.raw_value : readSecret.value}</pre>
+                            {(readSecret.raw_value && readSecret.raw_value !== readSecret.value) && (
+                                <div className="mt-4">
+                                    <h4 className="text-sm font-semibold text-gray-400 mb-2">Resolved Value</h4>
+                                    <pre className="bg-gray-900 p-4 rounded border border-gray-700 whitespace-pre-wrap font-mono text-blue-300 text-sm shadow-inner">{readSecret.value}</pre>
+                                </div>
+                            )}
                         </React.Fragment>
                     )}
                 </div>
@@ -756,11 +864,11 @@ function RoleManager({ roles, refreshRoles }) {
     const [editingRoleName, setEditingRoleName] = useState(null);
     const [expiresAt, setExpiresAt] = useState('');
     const [neverExpire, setNeverExpire] = useState(true);
+    const [canCreate, setCanCreate] = useState(false);
 
     const handleCreate = async (e) => {
         e.preventDefault();
         const activePolicies = policies.filter(p => p.prefix.trim() !== '');
-        if (activePolicies.length === 0) return alert('At least one policy prefix is required');
 
         let expiryVal = null;
         if (!neverExpire && expiresAt) {
@@ -772,7 +880,7 @@ function RoleManager({ roles, refreshRoles }) {
                 ...fetchConfig,
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ policies: activePolicies, expires_at: expiryVal })
+                body: JSON.stringify({ policies: activePolicies, can_create: canCreate, expires_at: expiryVal })
             });
             if (res.ok) {
                 setEditingRoleName(null);
@@ -780,6 +888,7 @@ function RoleManager({ roles, refreshRoles }) {
                 setPolicies([{ prefix: '', methods: ['GET'] }]);
                 setExpiresAt('');
                 setNeverExpire(true);
+                setCanCreate(false);
                 refreshRoles();
             } else {
                 alert('Failed to update role');
@@ -791,7 +900,7 @@ function RoleManager({ roles, refreshRoles }) {
             ...fetchConfig,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, policies: activePolicies, expires_at: expiryVal })
+            body: JSON.stringify({ name, policies: activePolicies, can_create: canCreate, expires_at: expiryVal })
         });
         if (res.ok) {
             const data = await res.json();
@@ -800,6 +909,7 @@ function RoleManager({ roles, refreshRoles }) {
             setPolicies([{ prefix: '', methods: ['GET'] }]);
             setExpiresAt('');
             setNeverExpire(true);
+            setCanCreate(false);
             refreshRoles();
         } else {
             const errorText = await res.text();
@@ -840,6 +950,7 @@ function RoleManager({ roles, refreshRoles }) {
             setPolicies([{ prefix: '', methods: ['GET'] }]);
             setExpiresAt('');
             setNeverExpire(true);
+            setCanCreate(false);
             refreshRoles();
         } else {
             alert('Failed to regenerate role token');
@@ -849,6 +960,7 @@ function RoleManager({ roles, refreshRoles }) {
     const handleEdit = (t) => {
         setEditingRoleName(t.name);
         setName(t.name);
+        setCanCreate(t.can_create || false);
         setPolicies(t.policies.map(p => {
             let methods = [...p.methods];
             if (methods.includes('*')) {
@@ -873,6 +985,7 @@ function RoleManager({ roles, refreshRoles }) {
     const handleClone = (t) => {
         setEditingRoleName(null);
         setName(`${t.name}-copy`);
+        setCanCreate(t.can_create || false);
         setPolicies(t.policies.map(p => ({ ...p })));
         setGeneratedToken('');
         if (t.expires_at) {
@@ -893,6 +1006,7 @@ function RoleManager({ roles, refreshRoles }) {
         setPolicies([{ prefix: '', methods: ['GET'] }]);
         setExpiresAt('');
         setNeverExpire(true);
+        setCanCreate(false);
     };
 
     return (
@@ -920,6 +1034,11 @@ function RoleManager({ roles, refreshRoles }) {
                                         <button onClick={() => handleDelete(t.name)} className="text-red-400 hover:text-red-200 text-sm transition-colors">Revoke</button>
                                     </div>
                                 </div>
+                                {t.can_create && (
+                                    <div className="text-xs text-green-400 font-semibold mb-1">
+                                        ✓ Can Create Secrets
+                                    </div>
+                                )}
                                 <div className="flex flex-wrap gap-2">
                                     {t.policies.map((p, i) => (
                                         <div key={i} className="bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[10px] font-mono shadow-inner">
@@ -944,6 +1063,19 @@ function RoleManager({ roles, refreshRoles }) {
                         <div>
                             <label className="block text-xs text-gray-400 mb-1">Role Name</label>
                             <input type="text" required value={name} onChange={e => setName(e.target.value)} disabled={!!editingRoleName} className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white text-sm disabled:opacity-50 focus:border-blue-500 outline-none" placeholder="e.g. ci-runner" />
+                        </div>
+
+                        <div className="pt-2 pb-1 border-b border-gray-700">
+                            <label className="flex items-center gap-2 cursor-pointer mb-2">
+                                <input 
+                                    type="checkbox" 
+                                    checked={canCreate} 
+                                    onChange={(e) => setCanCreate(e.target.checked)}
+                                    className="w-4 h-4 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-500"
+                                />
+                                <span className="text-sm font-semibold text-green-400">Can Create Secrets (Global)</span>
+                            </label>
+                            <p className="text-xs text-gray-500 mb-2">If enabled, this role can create new secrets with any prefix.</p>
                         </div>
                         
                         <div className="space-y-3">
@@ -1057,7 +1189,8 @@ function SystemSettings() {
         backup_target: '',
         backup_interval_mins: '5',
         backup_retention_all_days: '1',
-        backup_retention_daily_days: '30'
+        backup_retention_daily_days: '30',
+        auto_populate_env_name: 'true'
     });
     const [isSaving, setIsSaving] = useState(false);
     const [isBackingUp, setIsBackingUp] = useState(false);
@@ -1166,6 +1299,19 @@ function SystemSettings() {
                                     </div>
                                 </div>
                                 <p className="text-xs text-gray-500 mt-2 italic">Backups older than the sum of these two values will be automatically deleted from local directories.</p>
+                            </div>
+
+                            <div className="md:col-span-2 mt-4">
+                                <h4 className="text-sm font-medium text-gray-300 mb-3">GUI Preferences</h4>
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                    <input 
+                                        type="checkbox" 
+                                        checked={settings.auto_populate_env_name === 'true'} 
+                                        onChange={e => setSettings({...settings, auto_populate_env_name: e.target.checked ? 'true' : 'false'})}
+                                        className="w-4 h-4 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-blue-500"
+                                    />
+                                    <span className="text-sm text-gray-300">Auto-populate Environment Variable names when creating/editing secrets</span>
+                                </label>
                             </div>
                         </div>
                     </div>

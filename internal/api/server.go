@@ -9,14 +9,36 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"tiny-secrets-manager/internal/config"
 	"tiny-secrets-manager/internal/store"
 )
+
+// Storage defines the interface for the backend storage engine, enabling dependency injection.
+type Storage interface {
+	GetRoleByHash(ctx context.Context, hash []byte) (*store.RoleRecord, error)
+	GetRoleByName(ctx context.Context, name string) (*store.RoleRecord, error)
+	ExtendRoleExpiry(ctx context.Context, name string, newExpiry time.Time) error
+	List(ctx context.Context, global bool, prefixes []string, after string, limit int) ([]string, error)
+	Get(ctx context.Context, key string) ([]byte, error)
+	Put(ctx context.Context, key string, plaintext []byte) error
+	Delete(ctx context.Context, key string) error
+	ListRoles(ctx context.Context) ([]store.RoleRecord, error)
+	PutRole(ctx context.Context, name string, tokenHash []byte, policiesJSON []byte, isAdmin bool, canCreate bool, expiresAt *time.Time) error
+	UpdateRole(ctx context.Context, name string, policiesJSON []byte, canCreate bool, expiresAt *time.Time) error
+	UpdateRoleToken(ctx context.Context, name string, newTokenHash []byte) error
+	DeleteRole(ctx context.Context, name string) error
+	RegenerateRecoveryKeys(ctx context.Context) ([]string, error)
+	GetAllSettings(ctx context.Context) (map[string]string, error)
+	PutSetting(ctx context.Context, key, value string) error
+	GetSetting(ctx context.Context, key string) (string, error)
+	Backup(ctx context.Context, dst string) error
+	DeleteExpiredRoles(ctx context.Context) (int64, error)
+	GetAdmin(ctx context.Context, username string) (string, error)
+}
 
 type contextKey int
 
@@ -27,9 +49,10 @@ const dbTimeout = 5 * time.Second
 
 // Client represents an authenticated entity (Admin or Machine Token).
 type Client struct {
-	Name     string          `json:"name"`
-	IsAdmin  bool            `json:"is_admin"`
-	Policies []config.Policy `json:"policies"`
+	Name      string          `json:"name"`
+	IsAdmin   bool            `json:"is_admin"`
+	CanCreate bool            `json:"can_create"`
+	Policies  []config.Policy `json:"policies"`
 }
 
 // Can evaluates if the client has permission to perform a specific HTTP method
@@ -66,24 +89,47 @@ func (c Client) Can(method, path string) bool {
 
 // Server holds the application state and dependencies for the API handlers.
 type Server struct {
-	store        *store.Store
-	cfg          *config.Config
-	logger       *slog.Logger
-	version      string
-	backupNeeded atomic.Bool
-	backupMutex  sync.Mutex
+	store         Storage
+	cfg           *config.Config
+	logger        *slog.Logger
+	version       string
+	backupTrigger chan struct{}
 }
 
 // NewServer initializes a new API server instance.
-func NewServer(s *store.Store, cfg *config.Config, logger *slog.Logger, version string) *Server {
+func NewServer(s Storage, cfg *config.Config, logger *slog.Logger, version string) *Server {
 	srv := &Server{
-		store:   s,
-		cfg:     cfg,
-		logger:  logger,
-		version: version,
+		store:         s,
+		cfg:           cfg,
+		logger:        logger,
+		version:       version,
+		backupTrigger: make(chan struct{}, 1),
 	}
 	go srv.backupLoop()
 	return srv
+}
+
+// ErrorResponse represents a standardized JSON error message.
+type ErrorResponse struct {
+	Error  string `json:"error"`
+	Status int    `json:"status"`
+}
+
+// respondError writes a structured JSON error to the response.
+func (s *Server) respondError(w http.ResponseWriter, code int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(ErrorResponse{
+		Error:  message,
+		Status: code,
+	})
+}
+
+// respondJSON writes a structured JSON payload to the response.
+func (s *Server) respondJSON(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 // RegisterRoutes maps the secrets manager's API endpoints to their respective handlers.
@@ -95,6 +141,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/secrets/{key}", s.auth(s.handleGetSecret))
 	mux.HandleFunc("PUT /v1/secrets/{key}", s.auth(s.handlePutSecret))
 	mux.HandleFunc("DELETE /v1/secrets/{key}", s.auth(s.handleDeleteSecret))
+	mux.HandleFunc("POST /v1/secrets/resolve", s.auth(s.handleResolveSecret))
 	mux.HandleFunc("GET /v1/roles", s.auth(s.handleListRoles))
 	mux.HandleFunc("POST /v1/roles", s.auth(s.handleCreateRole))
 	mux.HandleFunc("PUT /v1/roles/{name}", s.auth(s.handleUpdateRole))
@@ -105,6 +152,54 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/system/settings", s.auth(s.handleGetSettings))
 	mux.HandleFunc("PUT /v1/system/settings", s.auth(s.handlePutSettings))
 	mux.HandleFunc("POST /v1/system/backup", s.auth(s.handleTriggerBackup))
+}
+
+var variableRegex = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// resolveVariables parses text for ${key} patterns and replaces them with their
+// corresponding secret values, provided the client has GET permission for them.
+// A visited map is used to prevent infinite recursive resolution in case of circular references.
+func (s *Server) resolveVariables(ctx context.Context, client Client, text string, visited map[string]bool) string {
+	if visited == nil {
+		visited = make(map[string]bool)
+	}
+
+	return variableRegex.ReplaceAllStringFunc(text, func(match string) string {
+		key := variableRegex.FindStringSubmatch(match)[1]
+
+		if visited[key] {
+			return match // Stop recursive resolution on circular reference, leave as-is
+		}
+
+		if !client.Can(http.MethodGet, key) {
+			return "" // Replace with empty string if not permitted
+		}
+
+		plaintext, err := s.store.Get(ctx, key)
+		if err != nil {
+			return "" // Missing or error fetching secret
+		}
+
+		var secretData struct {
+			Value string `json:"value"`
+		}
+		var val string
+		if err := json.Unmarshal(plaintext, &secretData); err == nil {
+			val = secretData.Value
+		} else {
+			val = string(plaintext)
+		}
+
+		// Create a new visited map for this branch to allow same variable in different branches
+		newVisited := make(map[string]bool, len(visited)+1)
+		for k, v := range visited {
+			newVisited[k] = v
+		}
+		newVisited[key] = true
+
+		// Recursively resolve nested variables
+		return s.resolveVariables(ctx, client, val, newVisited)
+	})
 }
 
 func (s *Server) getSameSiteMode() http.SameSite {
@@ -127,7 +222,7 @@ func (s *Server) SecurityMiddleware(next http.Handler) http.Handler {
 					// #nosec G710 - We are intentionally redirecting to the exact same URL requested by the user, just with HTTPS
 					http.Redirect(w, r, target, http.StatusMovedPermanently)
 				} else {
-					http.Error(w, "HTTPS Required", http.StatusForbidden)
+					s.respondError(w, http.StatusForbidden, "HTTPS Required")
 				}
 				return
 			}
@@ -155,7 +250,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		if tokenStr == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			s.respondError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -167,16 +262,16 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 		tr, err := s.store.GetRoleByHash(ctx, tokenHash[:])
 		if err == sql.ErrNoRows {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			s.respondError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		} else if err != nil {
 			s.logger.Error("token db lookup failed", "err", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			s.respondError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 
 		if tr.ExpiresAt != nil && time.Now().After(*tr.ExpiresAt) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			s.respondError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
@@ -187,6 +282,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 		client.Name = tr.Name
 		client.IsAdmin = tr.IsAdmin
+		client.CanCreate = tr.CanCreate
 		if client.IsAdmin {
 			client.Policies = []config.Policy{{Prefix: "*", Methods: []string{"*"}}}
 		} else {
@@ -199,10 +295,11 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 				if err == nil {
 					client.IsAdmin = false
 					client.Name = tr.Name
+					client.CanCreate = tr.CanCreate
 					_ = json.Unmarshal(tr.Policies, &client.Policies)
 				} else if err != sql.ErrNoRows {
 					s.logger.Error("token lookup for impersonation failed", "err", err)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
+					s.respondError(w, http.StatusInternalServerError, "internal server error")
 					return
 				}
 			}

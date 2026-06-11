@@ -21,7 +21,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid payload", http.StatusBadRequest)
+		s.respondError(w, http.StatusBadRequest, "invalid payload")
 		return
 	}
 
@@ -30,16 +30,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := s.store.GetAdmin(ctx, req.Username)
 	if err == sql.ErrNoRows {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		s.respondError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	} else if err != nil {
 		s.logger.Error("admin lookup failed", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.respondError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		s.respondError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -53,9 +53,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// We use a unique name for each session to avoid collisions
 	sessionName := "session_" + req.Username + "_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	expiresAt := time.Now().Add(1 * time.Hour)
-	if err := s.store.PutRole(ctx, sessionName, tokenHash[:], []byte("[]"), true, &expiresAt); err != nil {
+	if err := s.store.PutRole(ctx, sessionName, tokenHash[:], []byte("[]"), true, false, &expiresAt); err != nil {
 		s.logger.Error("failed to store session token", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		s.respondError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 

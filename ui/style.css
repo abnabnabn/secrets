@@ -2,3 +2,9 @@
 
 @source "./App.jsx";
 @source "./index.html";
+
+@layer base {
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}

@@ -34,6 +34,7 @@ type RoleRecord struct {
 	Name      string          `json:"name"`
 	IsAdmin   bool            `json:"is_admin"`
 	Policies  json.RawMessage `json:"policies"`
+	CanCreate bool            `json:"can_create"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt *time.Time      `json:"expires_at"`
 }
@@ -71,44 +72,90 @@ func New(dsn string, masterKeyB64, recoveryKeyB64 string, logger *slog.Logger) (
 }
 
 func initSchema(db *sql.DB) error {
-	queries := []string{
-		`CREATE TABLE IF NOT EXISTS encryption_slots (
-			slot_name TEXT PRIMARY KEY,
-			nonce BLOB NOT NULL,
-			wrapped_dek BLOB NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS secrets (
-			key TEXT PRIMARY KEY,
-			nonce BLOB NOT NULL,
-			ciphertext BLOB NOT NULL,
-			updated_at TIMESTAMP NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS roles (
-			name TEXT PRIMARY KEY,
-			hash BLOB NOT NULL UNIQUE,
-			policies_json TEXT NOT NULL,
-			is_admin INTEGER DEFAULT 0,
-			created_at TIMESTAMP NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS admins (
-			username TEXT PRIMARY KEY,
-			password_hash TEXT NOT NULL,
-			created_at TIMESTAMP NOT NULL
-		)`,
-		`ALTER TABLE roles ADD COLUMN expires_at TIMESTAMP`,
-		`CREATE TABLE IF NOT EXISTS settings (
-			key TEXT PRIMARY KEY,
-			value TEXT NOT NULL,
-			updated_at TIMESTAMP NOT NULL
-		)`,
+	var userVersion int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&userVersion); err != nil {
+		return fmt.Errorf("failed to read user_version: %w", err)
 	}
-	for _, q := range queries {
-		if _, err := db.Exec(q); err != nil {
-			if !strings.Contains(err.Error(), "duplicate column name") {
-				return err
+
+	if userVersion == 0 {
+		var count int
+		err := db.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='encryption_slots'").Scan(&count)
+		if err != nil {
+			return fmt.Errorf("failed to check for existing tables: %w", err)
+		}
+
+		if count > 0 {
+			// Legacy database without user_version
+			// We apply the known ALTERs just in case they haven't been run
+			alters := []string{
+				`ALTER TABLE roles ADD COLUMN expires_at TIMESTAMP`,
+				`ALTER TABLE roles ADD COLUMN can_create INTEGER DEFAULT 0`,
 			}
+			for _, q := range alters {
+				if _, err := db.Exec(q); err != nil {
+					if !strings.Contains(err.Error(), "duplicate column name") {
+						return fmt.Errorf("failed legacy migration: %w", err)
+					}
+				}
+			}
+			// Mark as V1
+			if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+				return fmt.Errorf("failed to set user_version: %w", err)
+			}
+			userVersion = 1
+		} else {
+			// Brand new database
+			queries := []string{
+				`CREATE TABLE IF NOT EXISTS encryption_slots (
+					slot_name TEXT PRIMARY KEY,
+					nonce BLOB NOT NULL,
+					wrapped_dek BLOB NOT NULL
+				)`,
+				`CREATE TABLE IF NOT EXISTS secrets (
+					key TEXT PRIMARY KEY,
+					nonce BLOB NOT NULL,
+					ciphertext BLOB NOT NULL,
+					updated_at TIMESTAMP NOT NULL
+				)`,
+				`CREATE TABLE IF NOT EXISTS roles (
+					name TEXT PRIMARY KEY,
+					hash BLOB NOT NULL UNIQUE,
+					policies_json TEXT NOT NULL,
+					is_admin INTEGER DEFAULT 0,
+					can_create INTEGER DEFAULT 0,
+					created_at TIMESTAMP NOT NULL,
+					expires_at TIMESTAMP
+				)`,
+				`CREATE TABLE IF NOT EXISTS admins (
+					username TEXT PRIMARY KEY,
+					password_hash TEXT NOT NULL,
+					created_at TIMESTAMP NOT NULL
+				)`,
+				`CREATE TABLE IF NOT EXISTS settings (
+					key TEXT PRIMARY KEY,
+					value TEXT NOT NULL,
+					updated_at TIMESTAMP NOT NULL
+				)`,
+			}
+			for _, q := range queries {
+				if _, err := db.Exec(q); err != nil {
+					return fmt.Errorf("failed to create tables: %w", err)
+				}
+			}
+			if _, err := db.Exec("PRAGMA user_version = 1"); err != nil {
+				return fmt.Errorf("failed to set user_version: %w", err)
+			}
+			userVersion = 1
 		}
 	}
+
+	// Future migrations would be handled like this:
+	// if userVersion < 2 {
+	//     _, err := db.Exec(`...`)
+	//     db.Exec("PRAGMA user_version = 2")
+	//     userVersion = 2
+	// }
+
 	return nil
 }
 
@@ -391,18 +438,26 @@ func (s *Store) List(ctx context.Context, global bool, prefixes []string, after 
 }
 
 // PutRole stores a new hashed machine role and its policies.
-func (s *Store) PutRole(ctx context.Context, name string, hash []byte, policiesJSON []byte, isAdmin bool, expiresAt *time.Time) error {
+func (s *Store) PutRole(ctx context.Context, name string, hash []byte, policiesJSON []byte, isAdmin bool, canCreate bool, expiresAt *time.Time) error {
 	adminFlag := 0
 	if isAdmin {
 		adminFlag = 1
 	}
-	_, err := s.db.ExecContext(ctx, "INSERT INTO roles (name, hash, policies_json, is_admin, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)", name, hash, string(policiesJSON), adminFlag, time.Now(), expiresAt)
+	createFlag := 0
+	if canCreate {
+		createFlag = 1
+	}
+	_, err := s.db.ExecContext(ctx, "INSERT INTO roles (name, hash, policies_json, is_admin, can_create, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", name, hash, string(policiesJSON), adminFlag, createFlag, time.Now(), expiresAt)
 	return err
 }
 
 // UpdateRole updates the policy JSON and expiration for an existing role name.
-func (s *Store) UpdateRole(ctx context.Context, name string, policiesJSON []byte, expiresAt *time.Time) error {
-	_, err := s.db.ExecContext(ctx, "UPDATE roles SET policies_json = ?, expires_at = ? WHERE name = ?", string(policiesJSON), expiresAt, name)
+func (s *Store) UpdateRole(ctx context.Context, name string, policiesJSON []byte, canCreate bool, expiresAt *time.Time) error {
+	createFlag := 0
+	if canCreate {
+		createFlag = 1
+	}
+	_, err := s.db.ExecContext(ctx, "UPDATE roles SET policies_json = ?, can_create = ?, expires_at = ? WHERE name = ?", string(policiesJSON), createFlag, expiresAt, name)
 	return err
 }
 
@@ -410,14 +465,15 @@ func (s *Store) UpdateRole(ctx context.Context, name string, policiesJSON []byte
 func (s *Store) GetRoleByHash(ctx context.Context, hash []byte) (*RoleRecord, error) {
 	var tr RoleRecord
 	var p string
-	var isAdmin int
+	var isAdmin, canCreate int
 	var expiresAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, created_at, expires_at FROM roles WHERE hash = ?", hash).Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt, &expiresAt)
+	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, can_create, created_at, expires_at FROM roles WHERE hash = ?", hash).Scan(&tr.Name, &p, &isAdmin, &canCreate, &tr.CreatedAt, &expiresAt)
 	if err != nil {
 		return nil, err
 	}
 	tr.Policies = json.RawMessage(p)
 	tr.IsAdmin = isAdmin == 1
+	tr.CanCreate = canCreate == 1
 	if expiresAt.Valid {
 		tr.ExpiresAt = &expiresAt.Time
 	}
@@ -428,14 +484,15 @@ func (s *Store) GetRoleByHash(ctx context.Context, hash []byte) (*RoleRecord, er
 func (s *Store) GetRoleByName(ctx context.Context, name string) (*RoleRecord, error) {
 	var tr RoleRecord
 	var p string
-	var isAdmin int
+	var isAdmin, canCreate int
 	var expiresAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, created_at, expires_at FROM roles WHERE name = ?", name).Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt, &expiresAt)
+	err := s.db.QueryRowContext(ctx, "SELECT name, policies_json, is_admin, can_create, created_at, expires_at FROM roles WHERE name = ?", name).Scan(&tr.Name, &p, &isAdmin, &canCreate, &tr.CreatedAt, &expiresAt)
 	if err != nil {
 		return nil, err
 	}
 	tr.Policies = json.RawMessage(p)
 	tr.IsAdmin = isAdmin == 1
+	tr.CanCreate = canCreate == 1
 	if expiresAt.Valid {
 		tr.ExpiresAt = &expiresAt.Time
 	}
@@ -444,7 +501,7 @@ func (s *Store) GetRoleByName(ctx context.Context, name string) (*RoleRecord, er
 
 // ListRoles returns all registered machine roles, sorted by name.
 func (s *Store) ListRoles(ctx context.Context) ([]RoleRecord, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT name, policies_json, is_admin, created_at, expires_at FROM roles ORDER BY name ASC")
+	rows, err := s.db.QueryContext(ctx, "SELECT name, policies_json, is_admin, can_create, created_at, expires_at FROM roles ORDER BY name ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -454,13 +511,14 @@ func (s *Store) ListRoles(ctx context.Context) ([]RoleRecord, error) {
 	for rows.Next() {
 		var tr RoleRecord
 		var p string
-		var isAdmin int
+		var isAdmin, canCreate int
 		var expiresAt sql.NullTime
-		if err := rows.Scan(&tr.Name, &p, &isAdmin, &tr.CreatedAt, &expiresAt); err != nil {
+		if err := rows.Scan(&tr.Name, &p, &isAdmin, &canCreate, &tr.CreatedAt, &expiresAt); err != nil {
 			return nil, err
 		}
 		tr.Policies = json.RawMessage(p)
 		tr.IsAdmin = isAdmin == 1
+		tr.CanCreate = canCreate == 1
 		if expiresAt.Valid {
 			tr.ExpiresAt = &expiresAt.Time
 		}
